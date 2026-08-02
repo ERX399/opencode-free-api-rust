@@ -6,17 +6,17 @@
 
 ## 下载
 
-每个 [GitHub Release](../../releases) 都附带了各平台的预编译单文件二进制文件。无需任何依赖——将对应文件复制到您的机器上并运行即可。
+每个 [GitHub Release](../../releases) 都附带了各平台的免安装压缩包。压缩包内含可执行文件和一键启动脚本,无需安装任何依赖,解压即用。
 
-| 平台 | 文件 | 备注 |
+| 平台 | 压缩包 | 启动方式 |
 | --- | --- | --- |
-| Linux x86_64 | `opencode-free-api-linux-x86_64` | 静态链接（musl） |
-| Linux arm64 | `opencode-free-api-linux-aarch64` | 静态链接（musl），例如 Raspberry Pi |
-| Windows x86_64 | `opencode-free-api-windows-x86_64.exe` | 仅使用系统 DLL |
-| macOS x86_64 | `opencode-free-api-macos-x86_64` | Intel 芯片 |
-| macOS arm64 | `opencode-free-api-macos-arm64` | Apple Silicon 芯片 |
+| Linux x86_64 | `opencode-free-api-linux-x86_64.tar.gz` | `./start.sh` |
+| Linux arm64 | `opencode-free-api-linux-aarch64.tar.gz` | `./start.sh`(如 Raspberry Pi) |
+| Windows x86_64 | `opencode-free-api-windows-x86_64.zip` | 双击 `start.bat` |
+| macOS Intel | `opencode-free-api-macos-x86_64.tar.gz` | `chmod +x start.command && ./start.command` |
+| macOS Apple Silicon | `opencode-free-api-macos-arm64.tar.gz` | `chmod +x start.command && ./start.command` |
 
-在 Linux/macOS 上，请先赋予可执行权限：`chmod +x opencode-free-api-*`。
+启动后,将任何 OpenAI 兼容客户端指向 `http://localhost:8788/v1`,API 密钥留空即可。启动脚本是纯文本,如需设置 `API_TOKEN`、`AUTH_TOKEN` 或自定义 `NODES` 列表,直接编辑即可。
 
 ## 运行时配置
 
@@ -49,3 +49,32 @@ AUTH_TOKEN=my-secret \
 本项目不包含任何内嵌的节点地址、凭证或已恢复的二进制内容。项目采用 MIT 许可证发布。
 
 `/v1/models` 会拉取实时的上游模型列表（默认使用官方 OpenCode Zen 目录，例如 `https://opencode.ai/zen/v1/models`），并在后处理中仅保留免费模型。携带 `"stream": true` 的请求会以 Server-Sent Events 形式逐块转发；错误会记录到 stderr，代理会故障转移到下一个节点。`/health` 会报告请求计数和上游失败计数。
+
+## 构建
+
+```sh
+cargo test
+cargo build --release
+```
+
+release 配置已启用 `opt-level = "z"`、`lto`、`strip` 和 `panic = "abort"`。需要更小的二进制可用 UPX 压缩（约 -50%）。
+
+### 交叉编译并打包全部平台
+
+需要 [rustup](https://rustup.rs)、[zig](https://ziglang.org) 和 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)：
+
+```sh
+rustup target add \
+  x86_64-pc-windows-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+  x86_64-apple-darwin aarch64-apple-darwin
+cargo install cargo-zigbuild --locked
+for t in x86_64-pc-windows-gnu x86_64-unknown-linux-musl \
+         aarch64-unknown-linux-musl x86_64-apple-darwin \
+         aarch64-apple-darwin; do
+  cargo zigbuild --release --target "$t"
+done
+```
+
+将产物整理进 `dist/` 后,运行 `scripts/make_packages.sh` 生成各平台的免安装压缩包（含一键启动脚本）。
+
+同样的构建流程会在每次推送 `v*` 标签时通过 [`release` 工作流](../../.github/workflows/release.yml) 自动执行,并把压缩包上传到 GitHub Release。

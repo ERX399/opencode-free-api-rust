@@ -1,4 +1,5 @@
 /target
 /.cargo
 /dist
+/packages
 /opencode-free-api

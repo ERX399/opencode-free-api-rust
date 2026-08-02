@@ -63,14 +63,17 @@ jobs:
           cp target/aarch64-apple-darwin/release/opencode-free-api \
              dist/opencode-free-api-macos-arm64
           chmod +x dist/*
-          sudo apt-get update -qq && sudo apt-get install -y -qq upx
+          sudo apt-get update -qq && sudo apt-get install -y -qq upx zip
           upx --best -q dist/opencode-free-api-linux-x86_64
           upx --best -q dist/opencode-free-api-linux-aarch64
           upx --best -q dist/opencode-free-api-windows-x86_64.exe
 
-      - name: Upload binaries to release
+      - name: Package archives
+        run: bash scripts/make_packages.sh
+
+      - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes || true
-          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release upload "$GITHUB_REF_NAME" packages/* --clobber
