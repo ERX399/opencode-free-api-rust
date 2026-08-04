@@ -8,14 +8,6 @@
 
 每个 [GitHub Release](../../releases) 都附带了各平台的免安装压缩包。压缩包内含可执行文件和一键启动脚本,无需安装任何依赖,解压即用。
 
-| 平台 | 压缩包 | 启动方式 |
-| --- | --- | --- |
-| Linux x86_64 | `opencode-free-api-linux-x86_64.tar.gz` | `./start.sh` |
-| Linux arm64 | `opencode-free-api-linux-aarch64.tar.gz` | `./start.sh`(如 Raspberry Pi) |
-| Windows x86_64 | `opencode-free-api-windows-x86_64.zip` | 双击 `start.bat` |
-| macOS Intel | `opencode-free-api-macos-x86_64.tar.gz` | `chmod +x start.command && ./start.command` |
-| macOS Apple Silicon | `opencode-free-api-macos-arm64.tar.gz` | `chmod +x start.command && ./start.command` |
-
 启动后,将任何 OpenAI 兼容客户端指向 `http://localhost:8788/v1`,API 密钥留空即可。启动脚本是纯文本,如需设置 `API_TOKEN`、`AUTH_TOKEN` 或自定义 `NODES` 列表,直接编辑即可。
 
 ## 运行时配置
