@@ -20,6 +20,7 @@ type ResponseBox = tiny_http::ResponseBox;
 const MAX_BODY_BYTES: u64 = 64 << 20;
 const DEFAULT_NODE: &str = "https://opencode.ai/zen/v1";
 const EXTRA_FREE_MODELS: &[&str] = &["big-pickle"];
+const INDEX_HTML: &str = include_str!("../static/index.html");
 
 #[derive(Clone)]
 struct App {
@@ -132,6 +133,9 @@ impl App {
         }
         if method == &Method::Post && path == "/v1/chat/completions" {
             return self.chat_completions(request);
+        }
+        if method == &Method::Get {
+            return index_response();
         }
         error_response(404, "not_found", "route not found")
     }
@@ -355,6 +359,20 @@ fn bad_request() -> ResponseBox {
         "invalid_request_error",
         "request body must be valid JSON up to 64 MiB",
     )
+}
+
+fn index_response() -> ResponseBox {
+    let mut headers = vec![header("Content-Type", "text/html; charset=utf-8")];
+    append_cors(&mut headers);
+    let body = INDEX_HTML.as_bytes().to_vec();
+    Response::new(
+        StatusCode(200),
+        headers,
+        Cursor::new(body),
+        Some(INDEX_HTML.len()),
+        None,
+    )
+    .boxed()
 }
 
 fn response(

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="darkreader-lock">
+<title>OpenCode Free API</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #14110d;
+    --bg-card: #1c1812;
+    --bg-card-hover: #221d16;
+    --text: #f5f1e8;
+    --text-muted: #a39d92;
+    --accent: #cc785c;
+    --accent-soft: rgba(204, 120, 92, 0.14);
+    --border: #2a251d;
+    --grid-line: rgba(245, 241, 232, 0.035);
+    --radius: 16px;
+    --radius-sm: 10px;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 32px rgba(0,0,0,0.25);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  body {
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(circle at 20% 30%, rgba(204,120,92,0.08), transparent 40%),
+      radial-gradient(circle at 80% 70%, rgba(204,120,92,0.05), transparent 35%),
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
+    background-position: 0 0, 0 0, 0 0, 0 0;
+    min-height: 100vh;
+    animation: gridScroll 3s linear infinite;
+  }
+  @keyframes gridScroll {
+    from { background-position: 0% 0%, 0% 0%, 0px 0px, 0px 0px; }
+    to   { background-position: 0% 0%, 0% 0%, -40px 40px, -40px 40px; }
+  }
+  ::selection { background: rgba(204,120,92,.5); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; position: relative; }
+  nav { padding: 20px 0; display: flex; justify-content: space-between; align-items: center; }
+  .brand { font-family: 'Newsreader', serif; font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
+  .brand b { color: var(--accent); }
+  .status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); padding: 6px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 999px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #5a544a; }
+  .dot.ok { background: #4a9d6b; animation: pulse 2s ease-in-out infinite; box-shadow: 0 0 8px rgba(74,157,107,0.6); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  header { padding: 72px 0 56px; text-align: center; }
+  .eyebrow { font-size: 13px; color: var(--accent); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 20px; }
+  h1 { font-family: 'Newsreader', serif; font-weight: 400; font-size: clamp(40px, 6vw, 72px); line-height: 1.05; letter-spacing: -0.025em; margin-bottom: 24px; }
+  h1 em { font-style: italic; color: var(--accent); }
+  .sub { font-size: 18px; color: var(--text-muted); max-width: 620px; margin: 0 auto 36px; }
+  .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 999px; font-size: 15px; font-weight: 500; text-decoration: none; border: 1px solid transparent; transition: all .2s ease; cursor: pointer; }
+  .btn-primary { background: var(--text); color: var(--bg); }
+  .btn-primary:hover { background: var(--accent); color: var(--text); }
+  .btn-ghost { background: transparent; color: var(--text); border-color: var(--border); }
+  .btn-ghost:hover { border-color: var(--text); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; padding: 24px 0 64px; }
+  .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; transition: transform .2s ease, background .2s ease, box-shadow .2s ease; }
+  .card:hover { transform: translateY(-2px); background: var(--bg-card-hover); box-shadow: var(--shadow); }
+  .card .ico { width: 40px; height: 40px; border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
+  .card h3 { font-family: 'Newsreader', serif; font-weight: 500; font-size: 20px; margin-bottom: 8px; }
+  .card p { font-size: 14px; color: var(--text-muted); }
+  .card code, .endpoint code, .row code { font-family: 'SF Mono', Consolas, monospace; font-size: 0.88em; background: var(--accent-soft); color: var(--accent); padding: 1px 6px; border-radius: 4px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; padding: 16px 0 64px; }
+  .stat { text-align: center; padding: 24px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); }
+  .stat .v { font-family: 'Newsreader', serif; font-size: 32px; font-weight: 500; color: var(--text); }
+  .stat .l { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
+  .endpoint { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; margin-bottom: 64px; }
+  .endpoint h2 { font-family: 'Newsreader', serif; font-weight: 500; font-size: 24px; margin-bottom: 20px; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px dashed var(--border); }
+  .row:last-child { border-bottom: none; }
+  .method { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; font-family: 'SF Mono', Consolas, monospace; }
+  .m-get { background: rgba(74,157,107,0.18); color: #6fbf82; }
+  .m-post { background: rgba(204,120,92,0.18); color: #e09879; }
+  .path { font-family: 'SF Mono', Consolas, monospace; font-size: 14px; color: var(--text); }
+  .desc { margin-left: auto; font-size: 13px; color: var(--text-muted); }
+  footer { padding: 48px 0; border-top: 1px solid var(--border); text-align: center; color: var(--text-muted); font-size: 13px; }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+  .copy { font-family: 'Newsreader', serif; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <div class="brand">OpenCode <b>Free</b> API</div>
+    <div class="status"><span class="dot" id="dot"></span><span id="status">运行中</span></div>
+  </nav>
+
+  <header>
+    <div class="eyebrow">Reverse Proxy · Rust</div>
+    <h1>免费模型，<em>开箱即用</em></h1>
+    <p class="sub">一个面向 OpenAI 兼容上游的轻量反向代理，自动过滤免费模型，多节点故障转移，零依赖部署。</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#endpoints">查看接口</a>
+      <a class="btn btn-ghost" href="https://github.com/ERX399/opencode-free-api-rust" target="_blank">GitHub</a>
+    </div>
+  </header>
+
+  <div class="cards">
+    <div class="card">
+      <div class="ico">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      </div>
+      <h3>极速轻量</h3>
+      <p>纯 Rust 实现，rustls 加密，单文件二进制，内存占用极低。</p>
+    </div>
+    <div class="card">
+      <div class="ico">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      </div>
+      <h3>自动故障转移</h3>
+      <p>按顺序尝试多个上游节点，失败自动切换，服务持续在线。</p>
+    </div>
+    <div class="card">
+      <div class="ico">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></svg>
+      </div>
+      <h3>免费模型过滤</h3>
+      <p>自动拉取上游模型列表，只暴露 <code>-free</code> 模型，干净利落。</p>
+    </div>
+    <div class="card">
+      <div class="ico">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      </div>
+      <h3>OpenAI 兼容</h3>
+      <p>标准 <code>/v1/chat/completions</code> 端点，支持流式 SSE，任何客户端直连。</p>
+    </div>
+  </div>
+
+  <div class="stats" id="stats">
+    <div class="stat"><div class="v" id="s-req">—</div><div class="l">总请求数</div></div>
+    <div class="stat"><div class="v" id="s-fail">—</div><div class="l">上游失败</div></div>
+    <div class="stat"><div class="v" id="s-nodes">1</div><div class="l">上游节点</div></div>
+    <div class="stat"><div class="v" id="s-models">—</div><div class="l">免费模型</div></div>
+  </div>
+
+  <div class="endpoint" id="endpoints">
+    <h2>API 接口</h2>
+    <div class="row"><span class="method m-get">GET</span><span class="path">/health</span><span class="desc">健康检查与统计</span></div>
+    <div class="row"><span class="method m-get">GET</span><span class="path">/v1/models</span><span class="desc">免费模型列表</span></div>
+    <div class="row"><span class="method m-post">POST</span><span class="path">/v1/chat/completions</span><span class="desc">对话补全（支持流式）</span></div>
+  </div>
+
+  <div class="endpoint">
+    <h2>快速开始</h2>
+    <div class="row"><span class="path">Base URL</span><span class="desc" id="base-url">http://localhost:8788/v1</span></div>
+    <div class="row"><span class="path">API Key</span><span class="desc">留空即可（除非设置了 AUTH_TOKEN）</span></div>
+    <div class="row"><span class="path">上游</span><span class="desc">官方 OpenCode Zen 网关</span></div>
+  </div>
+
+  <footer>
+    <div class="copy">MIT License · <a href="https://github.com/ERX399/opencode-free-api-rust" target="_blank">ERX399/opencode-free-api-rust</a></div>
+  </footer>
+</div>
+
+<script>
+  document.getElementById('dot').classList.remove('ok');
+  document.getElementById('status').textContent = '检查中…';
+  const base = location.origin;
+  document.getElementById('base-url').textContent = base + '/v1';
+
+  async function poll() {
+    try {
+      const r = await fetch(base + '/health');
+      const j = await r.json();
+      document.getElementById('dot').classList.add('ok');
+      document.getElementById('status').textContent = '运行中';
+      document.getElementById('s-req').textContent = j.requests ?? 0;
+      document.getElementById('s-fail').textContent = j.upstream_failures ?? 0;
+      document.getElementById('s-nodes').textContent = j.nodes?.length ?? 0;
+    } catch (e) {
+      document.getElementById('dot').classList.remove('ok');
+      document.getElementById('status').textContent = '连接失败';
+    }
+  }
+
+  async function loadModels() {
+    try {
+      const r = await fetch(base + '/v1/models');
+      const j = await r.json();
+      document.getElementById('s-models').textContent = j.data?.length ?? 0;
+    } catch (e) {}
+  }
+
+  poll();
+  loadModels();
+  setInterval(poll, 5000);
+</script>
+<noscript>
+  <style>
+    .dot { background: #4a9d6b; box-shadow: 0 0 8px rgba(74,157,107,0.6); }
+    #status::after { content: ''; }
+  </style>
+</noscript>
+</body>
+</html>

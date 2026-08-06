@@ -42,6 +42,10 @@ AUTH_TOKEN=my-secret \
 
 `/v1/models` 会拉取实时的上游模型列表（默认使用官方 OpenCode Zen 目录，例如 `https://opencode.ai/zen/v1/models`），并在后处理中仅保留免费模型。携带 `"stream": true` 的请求会以 Server-Sent Events 形式逐块转发；错误会记录到 stderr，代理会故障转移到下一个节点。`/health` 会报告请求计数和上游失败计数。
 
+## 前端页面
+
+浏览器访问任意非 API 路径（如 `http://localhost:8788/`）会返回一个内嵌的状态页，展示服务状态、请求统计与接口说明。页面在无 JS 环境下也能正常渲染，启用 JS 后会自动轮询 `/health` 与 `/v1/models` 实时刷新数据。
+
 ## 构建
 
 ```sh
