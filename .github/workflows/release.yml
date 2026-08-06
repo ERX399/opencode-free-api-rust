@@ -68,6 +68,16 @@ jobs:
             aarch64-apple-darwin; do
             cargo zigbuild --release --target "$t"
           done
+          # NDK r23+ ships only API-level-suffixed clang wrappers
+          # (e.g. aarch64-linux-android24-clang); cc-rs / ring look up
+          # CC_<target> and AR_<target>, so wire them explicitly.
+          tc="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$tc/aarch64-linux-android24-clang"
+          export CXX_aarch64_linux_android="$tc/aarch64-linux-android24-clang++"
+          export AR_aarch64_linux_android="$tc/llvm-ar"
+          export CC_x86_64_linux_android="$tc/x86_64-linux-android24-clang"
+          export CXX_x86_64_linux_android="$tc/x86_64-linux-android24-clang++"
+          export AR_x86_64_linux_android="$tc/llvm-ar"
           cargo build --release --target aarch64-linux-android
           cargo build --release --target x86_64-linux-android
 
