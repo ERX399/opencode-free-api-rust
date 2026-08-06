@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     env,
     io::{Cursor, Read},
+    net::UdpSocket,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -33,6 +34,9 @@ struct App {
     stream_client: Client,
     requests: Arc<AtomicU64>,
     failures: Arc<AtomicU64>,
+    port: String,
+    local_ip: String,
+    public_ip: Option<String>,
 }
 
 fn main() {
@@ -46,6 +50,8 @@ fn main() {
     } else {
         nodes
     };
+    let local_ip = primary_ip().unwrap_or_else(|| "127.0.0.1".to_owned());
+    let public_ip = public_ip();
     let app = App {
         nodes,
         token: env::var("API_TOKEN")
@@ -63,6 +69,9 @@ fn main() {
         stream_client: client(env_seconds("STREAM_TIMEOUT", 1800), connect_timeout),
         requests: Arc::new(AtomicU64::new(0)),
         failures: Arc::new(AtomicU64::new(0)),
+        port,
+        local_ip,
+        public_ip,
     };
     let workers = env::var("WORKERS")
         .ok()
@@ -74,11 +83,27 @@ fn main() {
         "listening on {address} with {} upstream node(s), {workers} worker(s)",
         app.nodes.len()
     );
+    eprintln!("  local:   http://127.0.0.1:{}/v1", app.port);
+    eprintln!("  network: http://{}:{}/v1", app.local_ip, app.port);
+    if let Some(ip) = &app.public_ip {
+        eprintln!("  public:  http://{ip}:{}/v1", app.port);
+    } else {
+        eprintln!("  public:  unavailable (outbound probe failed)");
+    }
     if app.auth_token.is_some() {
         eprintln!("authentication enabled via AUTH_TOKEN");
     }
 
-    let server = Server::http(&address).expect("bind HTTP server");
+    let server = match Server::http(&address) {
+        Ok(server) => server,
+        Err(_) => {
+            eprintln!("[Error] 端口已被占用，无法在 {address} 启动 HTTP 服务");
+            eprintln!("请设置环境变量 PORT 改用其他端口后重新启动");
+            eprintln!("5 秒后自动退出 ...");
+            thread::sleep(Duration::from_secs(5));
+            std::process::exit(1);
+        }
+    };
     let (tx, rx) = mpsc::channel::<HttpRequest>();
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..workers {
@@ -104,6 +129,37 @@ fn client(timeout: Duration, connect_timeout: Duration) -> Client {
         .expect("create HTTP client")
 }
 
+fn primary_ip() -> Option<String> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    if ip.is_loopback() {
+        None
+    } else {
+        Some(ip.to_string())
+    }
+}
+
+fn public_ip() -> Option<String> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let text = client
+        .get("https://api.ipify.org")
+        .send()
+        .ok()?
+        .text()
+        .ok()?;
+    let ip = text.trim().to_owned();
+    if ip.is_empty() {
+        None
+    } else {
+        Some(ip)
+    }
+}
+
 impl App {
     fn handle(&self, request: &mut HttpRequest) -> ResponseBox {
         let method = request.method();
@@ -121,6 +177,9 @@ impl App {
                     "nodes": self.nodes,
                     "requests": self.requests.load(Ordering::Relaxed),
                     "upstream_failures": self.failures.load(Ordering::Relaxed),
+                    "port": self.port,
+                    "local_ip": self.local_ip,
+                    "public_ip": self.public_ip,
                 }),
             );
         }
@@ -135,7 +194,7 @@ impl App {
             return self.chat_completions(request);
         }
         if method == &Method::Get {
-            return index_response();
+            return self.index_response();
         }
         error_response(404, "not_found", "route not found")
     }
@@ -319,6 +378,26 @@ impl App {
         }
         Err(failures.join("; "))
     }
+
+    fn index_response(&self) -> ResponseBox {
+        let public = self.public_ip.as_deref().unwrap_or("无法获取公网 IP");
+        let html = INDEX_HTML
+            .replace("__PORT__", &self.port)
+            .replace("__LOCAL_IP__", &self.local_ip)
+            .replace("__PUBLIC_IP__", public);
+        let body = html.into_bytes();
+        let len = body.len();
+        let mut headers = vec![header("Content-Type", "text/html; charset=utf-8")];
+        append_cors(&mut headers);
+        Response::new(
+            StatusCode(200),
+            headers,
+            Cursor::new(body),
+            Some(len),
+            None,
+        )
+        .boxed()
+    }
 }
 
 fn proxy_response(upstream: UpstreamResponse) -> ResponseBox {
@@ -359,20 +438,6 @@ fn bad_request() -> ResponseBox {
         "invalid_request_error",
         "request body must be valid JSON up to 64 MiB",
     )
-}
-
-fn index_response() -> ResponseBox {
-    let mut headers = vec![header("Content-Type", "text/html; charset=utf-8")];
-    append_cors(&mut headers);
-    let body = INDEX_HTML.as_bytes().to_vec();
-    Response::new(
-        StatusCode(200),
-        headers,
-        Cursor::new(body),
-        Some(INDEX_HTML.len()),
-        None,
-    )
-    .boxed()
 }
 
 fn response(
@@ -502,6 +567,9 @@ mod tests {
             stream_client: client(Duration::from_secs(15), Duration::from_secs(15)),
             requests: Arc::new(AtomicU64::new(0)),
             failures: Arc::new(AtomicU64::new(0)),
+            port: "8788".to_owned(),
+            local_ip: "127.0.0.1".to_owned(),
+            public_ip: None,
         }
     }
 

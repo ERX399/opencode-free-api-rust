@@ -80,6 +80,7 @@
   .m-get { background: rgba(74,157,107,0.18); color: #6fbf82; }
   .m-post { background: rgba(204,120,92,0.18); color: #e09879; }
   .path { font-family: 'SF Mono', Consolas, monospace; font-size: 14px; color: var(--text); }
+  .addr { margin-left: auto; font-family: 'SF Mono', Consolas, monospace; font-size: 13px; color: var(--accent); }
   .desc { margin-left: auto; font-size: 13px; color: var(--text-muted); }
   footer { padding: 48px 0; border-top: 1px solid var(--border); text-align: center; color: var(--text-muted); font-size: 13px; }
   footer a { color: var(--accent); text-decoration: none; }
@@ -151,7 +152,9 @@
 
   <div class="endpoint">
     <h2>快速开始</h2>
-    <div class="row"><span class="path">Base URL</span><span class="desc" id="base-url">http://localhost:8788/v1</span></div>
+    <div class="row"><span class="path">本机</span><span class="addr" id="url-loopback">http://127.0.0.1:__PORT__/v1</span></div>
+    <div class="row"><span class="path">局域网</span><span class="addr" id="url-lan">http://__LOCAL_IP__:__PORT__/v1</span></div>
+    <div class="row"><span class="path">公网</span><span class="addr" id="url-public">http://__PUBLIC_IP__:__PORT__/v1</span></div>
     <div class="row"><span class="path">API Key</span><span class="desc">留空即可（除非设置了 AUTH_TOKEN）</span></div>
     <div class="row"><span class="path">上游</span><span class="desc">官方 OpenCode Zen 网关</span></div>
   </div>
@@ -165,7 +168,6 @@
   document.getElementById('dot').classList.remove('ok');
   document.getElementById('status').textContent = '检查中…';
   const base = location.origin;
-  document.getElementById('base-url').textContent = base + '/v1';
 
   async function poll() {
     try {
@@ -176,6 +178,11 @@
       document.getElementById('s-req').textContent = j.requests ?? 0;
       document.getElementById('s-fail').textContent = j.upstream_failures ?? 0;
       document.getElementById('s-nodes').textContent = j.nodes?.length ?? 0;
+      const port = j.port ?? '8788';
+      const pub = j.public_ip ? `http://${j.public_ip}:${port}/v1` : '无法获取公网 IP';
+      document.getElementById('url-loopback').textContent = `http://127.0.0.1:${port}/v1`;
+      document.getElementById('url-lan').textContent = j.local_ip ? `http://${j.local_ip}:${port}/v1` : '无法获取局域网 IP';
+      document.getElementById('url-public').textContent = pub;
     } catch (e) {
       document.getElementById('dot').classList.remove('ok');
       document.getElementById('status').textContent = '连接失败';

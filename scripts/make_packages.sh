@@ -5,74 +5,47 @@ cd "$ROOT"
 rm -rf packages
 mkdir -p packages
 
-BAT_TMPL='@echo off
-setlocal
-cd /d %~dp0
-set HOST=0.0.0.0
-set PORT=8788
-set STRIP_FREE=1
-rem Optional: send a token to the upstream (e.g. your Zen key)
-rem set API_TOKEN=your-zen-key
-rem Optional: require clients to send Authorization: Bearer <value>
-rem set AUTH_TOKEN=my-secret
-echo OpenCode Free API proxy
-echo Listening on  http://localhost:%PORT%
-echo API endpoint: http://localhost:%PORT%/v1/chat/completions
-%~dp0__BIN__
-pause
-'
-
-SH_TMPL='#!/bin/sh
-cd "$(dirname "$0")" || exit 1
-HOST=${HOST:-0.0.0.0}
-PORT=${PORT:-8788}
-export HOST PORT STRIP_FREE=1
-# Optional: send a token to the upstream (e.g. your Zen key)
-# export API_TOKEN="your-zen-key"
-# Optional: require clients to send Authorization: Bearer <value>
-# export AUTH_TOKEN="my-secret"
-echo "OpenCode Free API proxy"
-echo "Listening on   http://localhost:$PORT"
-echo "API endpoint:  http://localhost:$PORT/v1/chat/completions"
-exec "./__BIN__"
-'
-
 README_TMPL='OpenCode Free API - single-file proxy for free models
 ===============================================
 
-How to start (no install, no dependencies):
-  Windows:  double-click  start.bat
-  Linux:    ./start.sh
-  macOS:    chmod +x start.command && ./start.command
-  Android: copy files to Termux (or root), then ./start.sh
+How to start (no install, no dependencies, no scripts):
+  Windows:  double-click  opencode-free-api.exe
+  Linux:    ./opencode-free-api
+  macOS:    chmod +x opencode-free-api && ./opencode-free-api
+  Android:  copy the binary to Termux (or root), then run it directly
+
+The console shows the listening addresses (local / LAN / public).
+If the port is already in use the program prints a friendly message
+instead of crashing, then exits after a few seconds.
 
 After starting, point any OpenAI-compatible client at:
-  Base URL:  http://localhost:8788/v1
+  Base URL:  http://127.0.0.1:8788/v1  (or the LAN/public address shown)
   API key:   anything (empty is fine)
 
+Optional configuration (environment variables, e.g. in PowerShell
+  $env:PORT=9000 then run the exe, or set system variables):
+  PORT          port to listen on (default 8788)
+  NODES         comma-separated upstream base URLs
+  API_TOKEN     bearer token sent to each upstream
+  AUTH_TOKEN    if set, clients must send Authorization: Bearer <value>
+  STRIP_FREE    strip the -free suffix from model ids and map calls back
+  UPSTREAM_TIMEOUT  non-streaming upstream timeout seconds (default 90)
+  STREAM_TIMEOUT    streaming upstream timeout seconds (default 1800)
+  CONNECT_TIMEOUT   upstream connect timeout seconds (default 10)
+  WORKERS           concurrent worker threads (default = CPU cores)
+  HOST              bind address (default 0.0.0.0)
+
 Default upstream is the official OpenCode Zen gateway and only free
-models are exposed. Edit the start script to set API_TOKEN / AUTH_TOKEN
-or a custom NODES list.
+models are exposed.
 '
 
 pack() {
-  plat="$1"; bin="$2"; script="$3"
+  plat="$1"; bin="$2"; target_name="$3"
   dir="opencode-free-api-$plat"
   out="packages/$dir"
   mkdir -p "$out"
-  cp "dist/$bin" "$out/$bin"
-  chmod +x "$out/$bin"
-
-  case "$script" in
-    *.bat)
-      printf '%s' "$BAT_TMPL" | sed "s|__BIN__|$bin|" | sed 's/$/\r/' > "$out/start.bat"
-      ;;
-    *)
-      printf '%s' "$SH_TMPL" | sed "s|__BIN__|$bin|" > "$out/$script"
-      chmod +x "$out/$script"
-      ;;
-  esac
-
+  cp "dist/$bin" "$out/$target_name"
+  chmod +x "$out/$target_name"
   printf '%s' "$README_TMPL" > "$out/README.txt"
 
   case "$plat" in
@@ -87,12 +60,12 @@ pack() {
   echo "packed $dir"
 }
 
-pack linux-x86_64 opencode-free-api-linux-x86_64 start.sh
-pack linux-aarch64 opencode-free-api-linux-aarch64 start.sh
-pack windows-x86_64 opencode-free-api-windows-x86_64.exe start.bat
-pack macos-x86_64 opencode-free-api-macos-x86_64 start.command
-pack macos-arm64 opencode-free-api-macos-arm64 start.command
-pack android-arm64 opencode-free-api-android-arm64 start.sh
-pack android-x86_64 opencode-free-api-android-x86_64 start.sh
+pack linux-x86_64 opencode-free-api-linux-x86_64 opencode-free-api
+pack linux-aarch64 opencode-free-api-linux-aarch64 opencode-free-api
+pack windows-x86_64 opencode-free-api-windows-x86_64.exe opencode-free-api.exe
+pack macos-x86_64 opencode-free-api-macos-x86_64 opencode-free-api
+pack macos-arm64 opencode-free-api-macos-arm64 opencode-free-api
+pack android-arm64 opencode-free-api-android-arm64 opencode-free-api
+pack android-x86_64 opencode-free-api-android-x86_64 opencode-free-api
 
 find packages -type f | sort
