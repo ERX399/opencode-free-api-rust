@@ -58,15 +58,30 @@ release 配置已启用 `opt-level = "z"`、`lto`、`strip` 和 `panic = "abort"
 ```sh
 rustup target add \
   x86_64-pc-windows-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
-  x86_64-apple-darwin aarch64-apple-darwin
+  x86_64-apple-darwin aarch64-apple-darwin \
+  aarch64-linux-android x86_64-linux-android
 cargo install cargo-zigbuild --locked
 for t in x86_64-pc-windows-gnu x86_64-unknown-linux-musl \
          aarch64-unknown-linux-musl x86_64-apple-darwin \
          aarch64-apple-darwin; do
   cargo zigbuild --release --target "$t"
 done
+# Android targets use the NDK toolchain, not zigbuild
+cargo build --release --target aarch64-linux-android
+cargo build --release --target x86_64-linux-android
 ```
 
 将产物整理进 `dist/` 后,运行 `scripts/make_packages.sh` 生成各平台的免安装压缩包（含一键启动脚本）。
+
+Android 平台需要安装 [Android NDK](https://developer.android.com/ndk),并设置 `ANDROID_NDK_HOME`。在 `~/.cargo/config.toml` 中指定链接器：
+
+```toml
+[target.aarch64-linux-android]
+linker = "<NDK>/toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android24-clang"
+[target.x86_64-linux-android]
+linker = "<NDK>/toolchains/llvm/prebuilt/<host>/bin/x86_64-linux-android24-clang"
+```
+
+然后在 Termux 或 root 环境中执行 `./start.sh` 即可运行。
 
 同样的构建流程会在每次推送 `v*` 标签时通过 [`release` 工作流](../../.github/workflows/release.yml) 自动执行,并把压缩包上传到 GitHub Release。

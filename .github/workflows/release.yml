@@ -23,7 +23,26 @@ jobs:
             x86_64-unknown-linux-musl \
             aarch64-unknown-linux-musl \
             x86_64-apple-darwin \
-            aarch64-apple-darwin
+            aarch64-apple-darwin \
+            aarch64-linux-android \
+            x86_64-linux-android
+
+      - name: Install Android NDK
+        run: |
+          ndk_version="r28b"
+          curl -sSL -o /tmp/ndk.zip \
+            https://dl.google.com/android/repository/android-ndk-${ndk_version}-linux.zip
+          unzip -q /tmp/ndk.zip -d /opt
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-${ndk_version}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=/opt/android-ndk-${ndk_version}" >> "$GITHUB_ENV"
+          # Wire cc cargo wrappers for cargo-zigbuild/android targets
+          ndk_toolchain="/opt/android-ndk-${ndk_version}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo '[target.aarch64-linux-android]'
+            echo "linker = \"${ndk_toolchain}/aarch64-linux-android24-clang\""
+            echo '[target.x86_64-linux-android]'
+            echo "linker = \"${ndk_toolchain}/x86_64-linux-android24-clang\""
+          } >> "$HOME/.cargo/config.toml"
 
       - name: Install zig
         run: |
@@ -40,6 +59,7 @@ jobs:
       - name: Build all targets
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
+          # Android targets use NDK clang directly (not zigbuild)
           for t in \
             x86_64-pc-windows-gnu \
             x86_64-unknown-linux-musl \
@@ -48,6 +68,8 @@ jobs:
             aarch64-apple-darwin; do
             cargo zigbuild --release --target "$t"
           done
+          cargo build --release --target aarch64-linux-android
+          cargo build --release --target x86_64-linux-android
 
       - name: Package artifacts
         run: |
@@ -62,11 +84,17 @@ jobs:
              dist/opencode-free-api-macos-x86_64
           cp target/aarch64-apple-darwin/release/opencode-free-api \
              dist/opencode-free-api-macos-arm64
+          cp target/aarch64-linux-android/release/opencode-free-api \
+             dist/opencode-free-api-android-arm64
+          cp target/x86_64-linux-android/release/opencode-free-api \
+             dist/opencode-free-api-android-x86_64
           chmod +x dist/*
           sudo apt-get update -qq && sudo apt-get install -y -qq upx zip
           upx --best -q dist/opencode-free-api-linux-x86_64
           upx --best -q dist/opencode-free-api-linux-aarch64
           upx --best -q dist/opencode-free-api-windows-x86_64.exe
+          # Android binaries are not UPX-compressed: UPX runtime stubs trip
+          # Android 10+ W^X memory protection and fail to launch.
 
       - name: Package archives
         run: bash scripts/make_packages.sh

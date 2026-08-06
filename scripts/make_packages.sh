@@ -44,6 +44,7 @@ How to start (no install, no dependencies):
   Windows:  double-click  start.bat
   Linux:    ./start.sh
   macOS:    chmod +x start.command && ./start.command
+  Android: copy files to Termux (or root), then ./start.sh
 
 After starting, point any OpenAI-compatible client at:
   Base URL:  http://localhost:8788/v1
@@ -91,5 +92,7 @@ pack linux-aarch64 opencode-free-api-linux-aarch64 start.sh
 pack windows-x86_64 opencode-free-api-windows-x86_64.exe start.bat
 pack macos-x86_64 opencode-free-api-macos-x86_64 start.command
 pack macos-arm64 opencode-free-api-macos-arm64 start.command
+pack android-arm64 opencode-free-api-android-arm64 start.sh
+pack android-x86_64 opencode-free-api-android-x86_64 start.sh
 
 find packages -type f | sort
