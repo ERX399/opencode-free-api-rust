@@ -3,3 +3,10 @@
 /dist
 /packages
 /opencode-free-api
+
+# Android build outputs
+/android/.gradle
+/android/build
+/android/app/build
+/android/local.properties
+/android/.idea

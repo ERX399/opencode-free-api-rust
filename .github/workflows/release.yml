@@ -115,3 +115,64 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes || true
           gh release upload "$GITHUB_REF_NAME" packages/* --clobber
+          gh release upload "$GITHUB_REF_NAME" android/app/build/outputs/apk/*/*.apk --clobber || true
+
+  apk:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          ndk_version="r28b"
+          curl -sSL -o /tmp/ndk.zip \
+            https://dl.google.com/android/repository/android-ndk-${ndk_version}-linux.zip
+          unzip -q /tmp/ndk.zip -d /opt
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-${ndk_version}" >> "$GITHUB_ENV"
+          ndk_toolchain="/opt/android-ndk-${ndk_version}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo '[target.aarch64-linux-android]'
+            echo "linker = \"${ndk_toolchain}/aarch64-linux-android24-clang\""
+          } >> "$HOME/.cargo/config.toml"
+
+      - name: Install rustup and android target
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup target add aarch64-linux-android
+
+      - name: Build Rust binary for Android arm64
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tc="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$tc/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$tc/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$tc/aarch64-linux-android24-clang"
+          cargo build --release --target aarch64-linux-android
+          mkdir -p android/app/src/main/assets
+          cp target/aarch64-linux-android/release/opencode-free-api \
+             android/app/src/main/assets/opencode-free-api
+
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+        env:
+          ANDROID_HOME: $ANDROID_SDK_ROOT
+
+      - name: Upload APK to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" android/app/build/outputs/apk/release/*.apk --clobber || true

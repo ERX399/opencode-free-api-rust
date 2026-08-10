@@ -9,7 +9,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::blocking::{Client, Response as UpstreamResponse};
@@ -21,6 +21,7 @@ type ResponseBox = tiny_http::ResponseBox;
 const MAX_BODY_BYTES: u64 = 64 << 20;
 const DEFAULT_NODE: &str = "https://opencode.ai/zen/v1";
 const EXTRA_FREE_MODELS: &[&str] = &["big-pickle"];
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const INDEX_HTML: &str = include_str!("../static/index.html");
 
 #[derive(Clone)]
@@ -37,9 +38,11 @@ struct App {
     port: String,
     local_ip: String,
     public_ip: Option<String>,
+    started: u64,
 }
 
 fn main() {
+    setup_console_utf8();
     let host = env_or("HOST", "0.0.0.0");
     let port = env_or("PORT", "8788");
     let address = format!("{host}:{port}");
@@ -72,6 +75,10 @@ fn main() {
         port,
         local_ip,
         public_ip,
+        started: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
     };
     let workers = env::var("WORKERS")
         .ok()
@@ -80,18 +87,20 @@ fn main() {
         .max(1);
 
     eprintln!(
-        "listening on {address} with {} upstream node(s), {workers} worker(s)",
+        "正在监听 {address}，上游节点 {} 个，工作线程 {workers} 个",
         app.nodes.len()
     );
-    eprintln!("  local:   http://127.0.0.1:{}/v1", app.port);
-    eprintln!("  network: http://{}:{}/v1", app.local_ip, app.port);
+    eprintln!("  控制台: http://127.0.0.1:{}/", app.port);
+    eprintln!("  本机:   http://127.0.0.1:{}/v1", app.port);
+    eprintln!("  局域网: http://{}:{}/v1", app.local_ip, app.port);
     if let Some(ip) = &app.public_ip {
-        eprintln!("  public:  http://{ip}:{}/v1", app.port);
+        eprintln!("  公网:   http://{ip}:{}/v1", app.port);
+        eprintln!("  （中国大陆家庭网络可能无法直接使用公网连接，建议走局域网）");
     } else {
-        eprintln!("  public:  unavailable (outbound probe failed)");
+        eprintln!("  公网:   无法获取（探测失败）");
     }
     if app.auth_token.is_some() {
-        eprintln!("authentication enabled via AUTH_TOKEN");
+        eprintln!("已启用 AUTH_TOKEN 鉴权");
     }
 
     let server = match Server::http(&address) {
@@ -129,6 +138,23 @@ fn client(timeout: Duration, connect_timeout: Duration) -> Client {
         .expect("create HTTP client")
 }
 
+#[cfg(windows)]
+fn setup_console_utf8() {
+    use std::ffi::c_int;
+    const CP_UTF8: u32 = 65001;
+    unsafe extern "C" {
+        fn SetConsoleOutputCP(cp: u32) -> c_int;
+        fn SetConsoleCP(cp: u32) -> c_int;
+    }
+    unsafe {
+        let _ = SetConsoleOutputCP(CP_UTF8);
+        let _ = SetConsoleCP(CP_UTF8);
+    }
+}
+
+#[cfg(not(windows))]
+fn setup_console_utf8() {}
+
 fn primary_ip() -> Option<String> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
@@ -162,13 +188,14 @@ fn public_ip() -> Option<String> {
 
 impl App {
     fn handle(&self, request: &mut HttpRequest) -> ResponseBox {
-        let method = request.method();
-        let path = request.url();
+        let method = request.method().clone();
+        let full_path = request.url().to_owned();
+        let path = full_path.split('?').next().unwrap_or(&full_path);
 
-        if method == &Method::Options {
+        if method == Method::Options {
             return cors_response(204, Vec::new());
         }
-        if method == &Method::Get && path == "/health" {
+        if method == Method::Get && is_health_path(path) {
             self.requests.fetch_add(1, Ordering::Relaxed);
             return json_response(
                 200,
@@ -180,6 +207,7 @@ impl App {
                     "port": self.port,
                     "local_ip": self.local_ip,
                     "public_ip": self.public_ip,
+                    "started": self.started,
                 }),
             );
         }
@@ -187,16 +215,19 @@ impl App {
             return error_response(401, "invalid_api_key", "missing or invalid bearer token");
         }
         self.requests.fetch_add(1, Ordering::Relaxed);
-        if method == &Method::Get && path == "/v1/models" {
+        if method == Method::Get && is_models_path(path) {
             return self.models(request);
         }
-        if method == &Method::Post && path == "/v1/chat/completions" {
+        if method == Method::Get && is_claude_models_path(path) {
+            return self.claude_models();
+        }
+        if method == Method::Post && is_chat_path(path) {
             return self.chat_completions(request);
         }
-        if method == &Method::Get {
+        if method == Method::Get && path == "/" {
             return self.index_response();
         }
-        error_response(404, "not_found", "route not found")
+        self.forward(request, &method, &full_path)
     }
 
     fn authorized(&self, request: &HttpRequest) -> bool {
@@ -359,19 +390,19 @@ impl App {
             match request.send() {
                 Ok(response) if response.status().is_success() => {
                     if stream {
-                        eprintln!("streaming {path} via {node}");
+                        eprintln!("正在通过 {node} 流式转发 {path}");
                     }
                     return Ok(response);
                 }
                 Ok(response) => {
                     self.failures.fetch_add(1, Ordering::Relaxed);
                     let message = format!("{node}: HTTP {}", response.status());
-                    eprintln!("upstream failure {message}");
+                    eprintln!("上游请求失败 {message}");
                     failures.push(message);
                 }
                 Err(error) => {
                     self.failures.fetch_add(1, Ordering::Relaxed);
-                    eprintln!("upstream failure {node}: {error}");
+                    eprintln!("上游请求失败 {node}: {error}");
                     failures.push(format!("{node}: {error}"));
                 }
             }
@@ -382,12 +413,16 @@ impl App {
     fn index_response(&self) -> ResponseBox {
         let public = self.public_ip.as_deref().unwrap_or("无法获取公网 IP");
         let html = INDEX_HTML
+            .replace("__VERSION__", VERSION)
             .replace("__PORT__", &self.port)
             .replace("__LOCAL_IP__", &self.local_ip)
             .replace("__PUBLIC_IP__", public);
         let body = html.into_bytes();
         let len = body.len();
-        let mut headers = vec![header("Content-Type", "text/html; charset=utf-8")];
+        let mut headers = vec![
+            header("Content-Type", "text/html; charset=utf-8"),
+            header("Cache-Control", "no-cache, no-store, must-revalidate"),
+        ];
         append_cors(&mut headers);
         Response::new(
             StatusCode(200),
@@ -397,6 +432,117 @@ impl App {
             None,
         )
         .boxed()
+    }
+
+    fn claude_models(&self) -> ResponseBox {
+        let ids = self.free_model_ids();
+        let data: Vec<Value> = ids
+            .into_iter()
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "display_name": id,
+                    "created_at": 0,
+                    "type": "model"
+                })
+            })
+            .collect();
+        json_response(200, json!({ "data": data }))
+    }
+
+    fn free_model_ids(&self) -> Vec<String> {
+        let map = self.free_map.lock().expect("model map lock");
+        if !map.is_empty() {
+            let mut ids: Vec<String> = map.keys().cloned().collect();
+            ids.sort();
+            return ids;
+        }
+        drop(map);
+        match self
+            .upstream("/models", Method::Get, Vec::new(), None, false)
+        {
+            Ok(response) => {
+                let payload: Value = response
+                    .bytes()
+                    .ok()
+                    .and_then(|body| serde_json::from_slice(&body).ok())
+                    .unwrap_or(Value::Null);
+                let mut ids: Vec<String> = self
+                    .process_models(payload)
+                    .into_iter()
+                    .filter_map(|item| {
+                        item.get("id").and_then(Value::as_str).map(str::to_owned)
+                    })
+                    .collect();
+                ids.sort();
+                ids
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn forward(
+        &self,
+        request: &mut HttpRequest,
+        method: &Method,
+        full_path: &str,
+    ) -> ResponseBox {
+        if self.nodes.is_empty() {
+            return error_response(502, "upstream_error", "no upstream nodes configured");
+        }
+        let mut body = Vec::new();
+        if matches!(method, &Method::Post | &Method::Put | &Method::Patch) {
+            if request
+                .as_reader()
+                .take(MAX_BODY_BYTES + 1)
+                .read_to_end(&mut body)
+                .is_err()
+                || body.len() as u64 > MAX_BODY_BYTES
+            {
+                return bad_request();
+            }
+        }
+        let target = route_upstream_path(full_path);
+        for node in &self.nodes {
+            let url = format!("{node}{target}");
+            let builder = match method {
+                Method::Post => self
+                    .stream_client
+                    .post(&url)
+                    .header("Content-Type", "application/json"),
+                Method::Put => self
+                    .stream_client
+                    .put(&url)
+                    .header("Content-Type", "application/json"),
+                Method::Patch => self
+                    .stream_client
+                    .patch(&url)
+                    .header("Content-Type", "application/json"),
+                Method::Delete => self.stream_client.delete(&url),
+                _ => self.stream_client.get(&url),
+            };
+            let result = builder.body(body.clone()).send();
+            match result {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let content_type = response
+                        .headers()
+                        .get("Content-Type")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| "application/json; charset=utf-8".to_owned());
+                    let mut headers = vec![header("Cache-Control", "no-cache")];
+                    headers.push(header("Content-Type", &content_type));
+                    append_cors(&mut headers);
+                    return Response::new(StatusCode(status), headers, response, None, None).boxed();
+                }
+                Err(error) => {
+                    self.failures.fetch_add(1, Ordering::Relaxed);
+                    eprintln!("上游请求失败 {node}: {error}");
+                }
+            }
+        }
+        error_response(502, "upstream_error", "all upstream nodes failed")
     }
 }
 
@@ -490,6 +636,70 @@ fn is_stream_request(payload: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn is_health_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/health" | "/healthz" | "/ready" | "/api/health" | "/api/status"
+    )
+}
+
+fn is_models_path(path: &str) -> bool {
+    const MODELS_PATHS: &[&str] = &[
+        "/v1/models",
+        "/models",
+        "/api/paas/v4/models",
+        "/api/v3/models",
+        "/api/v1/models",
+        "/v1beta/models",
+    ];
+    MODELS_PATHS.contains(&path)
+}
+
+fn is_claude_models_path(path: &str) -> bool {
+    matches!(path, "/claude/v1/models" | "/anthropic/v1/models")
+}
+
+fn is_chat_path(path: &str) -> bool {
+    const CHAT_PATHS: &[&str] = &[
+        "/v1/chat/completions",
+        "/chat/completions",
+        "/api/paas/v4/chat/completions",
+        "/api/v3/chat/completions",
+        "/api/v1/chat/completions",
+        "/v1beta/chat/completions",
+    ];
+    CHAT_PATHS.contains(&path)
+}
+
+fn route_upstream_path(path: &str) -> String {
+    if path == "/" {
+        return "/".to_owned();
+    }
+    const PREFIXES: &[&str] = &[
+        "/api/paas/v4",
+        "/api/v3",
+        "/api/v1",
+        "/claude/v1",
+        "/anthropic/v1",
+        "/openai/deployments/",
+        "/v1beta",
+        "/api",
+        "/v1",
+    ];
+    let mut rest = path;
+    for prefix in PREFIXES {
+        if let Some(stripped) = rest.strip_prefix(prefix) {
+            rest = stripped;
+            break;
+        }
+    }
+    if rest.is_empty() {
+        "/".to_owned()
+    } else {
+        rest.to_owned()
+    }
+}
+
 fn env_or(name: &str, fallback: &str) -> String {
     env::var(name)
         .ok()
@@ -570,6 +780,7 @@ mod tests {
             port: "8788".to_owned(),
             local_ip: "127.0.0.1".to_owned(),
             public_ip: None,
+            started: 0,
         }
     }
 

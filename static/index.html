@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="darkreader-lock">
 <title>OpenCode Free API</title>
+<link rel="icon" type="image/x-icon" href="https://opencode.ai/favicon-v3.ico">
+<link rel="apple-touch-icon" href="https://opencode.ai/apple-touch-icon-v3.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
@@ -86,6 +88,24 @@
   footer a { color: var(--accent); text-decoration: none; }
   footer a:hover { text-decoration: underline; }
   .copy { font-family: 'Newsreader', serif; }
+  .banner {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center; gap: 16px;
+    padding: 14px 20px; font-size: 14px;
+    background: linear-gradient(135deg, var(--accent), #e0977f);
+    color: #fff; box-shadow: 0 -4px 24px rgba(0,0,0,0.35);
+  }
+  .banner a {
+    color: #fff; font-weight: 600; text-decoration: none;
+    padding: 6px 14px; border: 1px solid rgba(255,255,255,0.6); border-radius: 8px;
+  }
+  .banner a:hover { background: rgba(255,255,255,0.18); }
+  .banner-close {
+    background: rgba(255,255,255,0.18); border: none; color: #fff;
+    width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+    font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  }
+  .banner-close:hover { background: rgba(255,255,255,0.32); }
 </style>
 </head>
 <body>
@@ -137,9 +157,9 @@
   </div>
 
   <div class="stats" id="stats">
+    <div class="stat"><div class="v" id="s-uptime">00:00:00</div><div class="l">运行时长</div></div>
     <div class="stat"><div class="v" id="s-req">—</div><div class="l">总请求数</div></div>
     <div class="stat"><div class="v" id="s-fail">—</div><div class="l">上游失败</div></div>
-    <div class="stat"><div class="v" id="s-nodes">1</div><div class="l">上游节点</div></div>
     <div class="stat"><div class="v" id="s-models">—</div><div class="l">免费模型</div></div>
   </div>
 
@@ -155,29 +175,51 @@
     <div class="row"><span class="path">本机</span><span class="addr" id="url-loopback">http://127.0.0.1:__PORT__/v1</span></div>
     <div class="row"><span class="path">局域网</span><span class="addr" id="url-lan">http://__LOCAL_IP__:__PORT__/v1</span></div>
     <div class="row"><span class="path">公网</span><span class="addr" id="url-public">http://__PUBLIC_IP__:__PORT__/v1</span></div>
+    <div class="row"><span class="path">注意</span><span class="desc">中国大陆家庭网络可能无法直接使用公网连接，建议优先用局域网</span></div>
     <div class="row"><span class="path">API Key</span><span class="desc">留空即可（除非设置了 AUTH_TOKEN）</span></div>
     <div class="row"><span class="path">上游</span><span class="desc">官方 OpenCode Zen 网关</span></div>
   </div>
 
   <footer>
-    <div class="copy">MIT License · <a href="https://github.com/ERX399/opencode-free-api-rust" target="_blank">ERX399/opencode-free-api-rust</a></div>
+    <div class="copy">© 夏若倾心 · v<span id="ver">__VERSION__</span> · <a href="https://github.com/ERX399/opencode-free-api-rust" target="_blank">GitHub</a></div>
   </footer>
+</div>
+
+<div class="banner" id="update-banner" style="display:none;">
+  <span>发现新版本 <b id="update-ver"></b>，立即更新</span>
+  <a id="update-link" href="https://github.com/ERX399/opencode-free-api-rust/releases/latest" target="_blank">去下载 →</a>
+  <button type="button" id="update-close" class="banner-close">×</button>
 </div>
 
 <script>
   document.getElementById('dot').classList.remove('ok');
   document.getElementById('status').textContent = '检查中…';
   const base = location.origin;
+  let startedAt = null;
+
+  function fmt(sec) {
+    const h = String(Math.floor(sec / 3600)).padStart(2, '0');
+    const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
+    const s = String(Math.floor(sec % 60)).padStart(2, '0');
+    return `${h}:${m}:${s}`;
+  }
+
+  function tick() {
+    if (startedAt) {
+      document.getElementById('s-uptime').textContent = fmt((Date.now() - startedAt * 1000) / 1000);
+    }
+  }
 
   async function poll() {
     try {
       const r = await fetch(base + '/health');
       const j = await r.json();
+      startedAt = j.started ?? startedAt;
+      tick();
       document.getElementById('dot').classList.add('ok');
       document.getElementById('status').textContent = '运行中';
       document.getElementById('s-req').textContent = j.requests ?? 0;
       document.getElementById('s-fail').textContent = j.upstream_failures ?? 0;
-      document.getElementById('s-nodes').textContent = j.nodes?.length ?? 0;
       const port = j.port ?? '8788';
       const pub = j.public_ip ? `http://${j.public_ip}:${port}/v1` : '无法获取公网 IP';
       document.getElementById('url-loopback').textContent = `http://127.0.0.1:${port}/v1`;
@@ -197,8 +239,39 @@
     } catch (e) {}
   }
 
+  function verNum(v) {
+    let n = 0, p = 1;
+    for (const part of String(v || '').split(/[.-]/)) {
+      n += parseInt(part, 10) * p;
+      p *= 100;
+    }
+    return n;
+  }
+
+  async function checkUpdate() {
+    try {
+      const cur = document.getElementById('ver').textContent;
+      const r = await fetch('https://api.github.com/repos/ERX399/opencode-free-api-rust/releases/latest', {
+        headers: { 'Accept': 'application/vnd.github+json' }
+      });
+      if (!r.ok) return;
+      const j = await r.json();
+      const tag = String(j.tag_name || '').replace(/^v/i, '');
+      if (tag && verNum(tag) > verNum(cur)) {
+        document.getElementById('update-ver').textContent = 'v' + tag;
+        document.getElementById('update-banner').style.display = 'flex';
+      }
+    } catch (e) {}
+  }
+
+  document.getElementById('update-close').addEventListener('click', () => {
+    document.getElementById('update-banner').style.display = 'none';
+  });
+
   poll();
   loadModels();
+  checkUpdate();
+  setInterval(tick, 1000);
   setInterval(poll, 5000);
 </script>
 <noscript>
