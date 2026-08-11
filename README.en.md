@@ -8,7 +8,7 @@ _✨ OpenAI-compatible reverse proxy · single-binary deploy ✨_
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.5-blue.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](../../releases)
 [![GitHub](https://img.shields.io/badge/author-ERX399-blue)](https://github.com/ERX399)
 
 [English](./README.en.md) | [简体中文](./README.md)
