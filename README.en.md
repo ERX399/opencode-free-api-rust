@@ -8,7 +8,7 @@ _✨ OpenAI-compatible reverse proxy · single-binary deploy ✨_
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](../../releases)
 [![GitHub](https://img.shields.io/badge/author-ERX399-blue)](https://github.com/ERX399)
 
 [English](./README.en.md) | [简体中文](./README.md)
@@ -30,7 +30,7 @@ The console prints three addresses on startup (loopback / LAN / public). Point a
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8788` | Bind port |
 | `NODES` | `https://opencode.ai/zen/v1` | Comma-separated upstream base URLs; defaults to the official OpenCode Zen gateway |
-| `API_TOKEN` | unset | Optional Bearer token sent to each upstream (fill in your Zen key) |
+| `API_TOKEN` | unset | Optional Bearer token sent to each upstream; unset means no Authorization header is sent (fill in your Zen key) |
 | `AUTH_TOKEN` | unset | If set, requests must carry `Authorization: Bearer <value>` (`/health` and preflight exempt) |
 | `STRIP_FREE` | off | Strip the `-free` suffix from model IDs in `/v1/models` and map calls back to the real ID |
 | `UPSTREAM_TIMEOUT` | `90` | Non-streaming upstream request timeout (seconds) |
@@ -49,13 +49,13 @@ AUTH_TOKEN=my-secret \
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/health` `/healthz` `/ready` `/api/health` `/api/status` | Health check & stats (request count, upstream failures, listen addresses, start time) |
+| `GET` | `/health` `/healthz` `/ready` `/api/health` `/api/status` | Health check & stats (request count, listen addresses, start time) |
 | `GET` | `/v1/models` | Free model list — only `*-free` models from the upstream |
 | `GET` | `/claude/v1/models` `/anthropic/v1/models` | Claude-compatible model list |
 | `POST` | `/v1/chat/completions` | Chat completions, streaming SSE supported |
 | `*` | anything else | Transparently forwarded upstream; failure triggers failover to the next node |
 
-`/v1`-prefixed endpoints also accept `/models`, `/chat/completions` and common aliases like `/api/v1`, `/api/v3`, `/api/paas/v4`, `/v1beta`. `/v1/models` fetches the upstream list and keeps only free models; streaming requests are forwarded chunk-by-chunk as SSE, errors log to stderr and trigger multi-node failover. `/health` reports request count, upstream failure count and listen addresses.
+`/v1`-prefixed endpoints also accept `/models`, `/chat/completions` and common aliases like `/api/v1`, `/api/v3`, `/api/paas/v4`, `/v1beta`. `/v1/models` fetches the upstream list and keeps only free models; upstream requests use `User-Agent: opencode/1.0`, streaming requests are forwarded chunk-by-chunk as SSE and fail over to the next node on errors. `/health` reports request count and listen address information.
 
 ## Web UI
 

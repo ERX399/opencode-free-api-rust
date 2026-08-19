@@ -100,9 +100,11 @@ jobs:
              dist/opencode-free-api-android-x86_64
           chmod +x dist/*
           sudo apt-get update -qq && sudo apt-get install -y -qq upx zip
-          upx --best -q dist/opencode-free-api-linux-x86_64
-          upx --best -q dist/opencode-free-api-linux-aarch64
-          upx --best -q dist/opencode-free-api-windows-x86_64.exe
+          upx --best --lzma -q dist/opencode-free-api-linux-x86_64
+          upx --best --lzma -q dist/opencode-free-api-linux-aarch64
+          upx --best --lzma -q dist/opencode-free-api-windows-x86_64.exe
+          upx --best --lzma -q dist/opencode-free-api-macos-x86_64
+          upx --best --lzma -q dist/opencode-free-api-macos-arm64
           # Android binaries are not UPX-compressed: UPX runtime stubs trip
           # Android 10+ W^X memory protection and fail to launch.
 
@@ -114,7 +116,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes || true
-          gh release upload "$GITHUB_REF_NAME" packages/* --clobber
+          gh release upload "$GITHUB_REF_NAME" packages/* --clobber || true
           gh release upload "$GITHUB_REF_NAME" android/app/build/outputs/apk/*/*.apk --clobber || true
 
   apk:

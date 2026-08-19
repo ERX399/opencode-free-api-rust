@@ -135,20 +135,6 @@
     </div>
     <div class="card">
       <div class="ico">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-      </div>
-      <h3>自动故障转移</h3>
-      <p>按顺序尝试多个上游节点，失败自动切换，服务持续在线。</p>
-    </div>
-    <div class="card">
-      <div class="ico">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></svg>
-      </div>
-      <h3>免费模型过滤</h3>
-      <p>自动拉取上游模型列表，只暴露 <code>-free</code> 模型，干净利落。</p>
-    </div>
-    <div class="card">
-      <div class="ico">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
       </div>
       <h3>OpenAI 兼容</h3>
@@ -159,7 +145,6 @@
   <div class="stats" id="stats">
     <div class="stat"><div class="v" id="s-uptime">00:00:00</div><div class="l">运行时长</div></div>
     <div class="stat"><div class="v" id="s-req">—</div><div class="l">总请求数</div></div>
-    <div class="stat"><div class="v" id="s-fail">—</div><div class="l">上游失败</div></div>
     <div class="stat"><div class="v" id="s-models">—</div><div class="l">免费模型</div></div>
   </div>
 
@@ -219,7 +204,6 @@
       document.getElementById('dot').classList.add('ok');
       document.getElementById('status').textContent = '运行中';
       document.getElementById('s-req').textContent = j.requests ?? 0;
-      document.getElementById('s-fail').textContent = j.upstream_failures ?? 0;
       const port = j.port ?? '8788';
       const pub = j.public_ip ? `http://${j.public_ip}:${port}/v1` : '无法获取公网 IP';
       document.getElementById('url-loopback').textContent = `http://127.0.0.1:${port}/v1`;
