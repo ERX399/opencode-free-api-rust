@@ -8,7 +8,7 @@ _✨ OpenAI 兼容反代 · 单文件部署 ✨_
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](../../releases)
 [![GitHub](https://img.shields.io/badge/作者-ERX399-blue)](https://github.com/ERX399)
 
 [简体中文](./README.md) | [English](./README.en.md)
@@ -30,7 +30,7 @@ _✨ OpenAI 兼容反代 · 单文件部署 ✨_
 | `HOST` | `0.0.0.0` | 绑定地址 |
 | `PORT` | `8788` | 绑定端口 |
 | `NODES` | `https://opencode.ai/zen/v1` | 逗号分隔的上游基础 URL，默认官方 OpenCode Zen 网关 |
-| `API_TOKEN` | 未设置 | 发往上游的可选 Bearer 令牌（填你的 Zen Key） |
+| `API_TOKEN` | 未设置 | 发往上游的可选 Bearer 令牌，未设置时不发送 Authorization 请求头（填你的 Zen Key） |
 | `AUTH_TOKEN` | 未设置 | 设置后请求须携带 `Authorization: Bearer <value>`（`/health` 与预检除外） |
 | `STRIP_FREE` | off | 去掉 `/v1/models` 返回 ID 的 `-free` 后缀，调用时映射回真实 ID |
 | `UPSTREAM_TIMEOUT` | `90` | 非流式上游请求超时（秒） |
@@ -49,13 +49,13 @@ AUTH_TOKEN=my-secret \
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/health` `/healthz` `/ready` `/api/health` `/api/status` | 健康检查与统计（请求数、上游失败、监听地址、启动时间） |
+| `GET` | `/health` `/healthz` `/ready` `/api/health` `/api/status` | 健康检查与统计（请求数、监听地址、启动时间） |
 | `GET` | `/v1/models` | 免费模型列表，仅暴露上游 `*-free` 模型 |
 | `GET` | `/claude/v1/models` `/anthropic/v1/models` | Claude 兼容模型列表 |
 | `POST` | `/v1/chat/completions` | 对话补全，支持流式 SSE |
 | `*` | 其他 | 透传上游，失败则切换下一节点 |
 
-`/v1` 前缀的端点同时兼容 `/models`、`/chat/completions` 及 `/api/v1`、`/api/v3`、`/api/paas/v4`、`/v1beta` 等常见别名。`/v1/models` 拉取上游列表并只保留免费模型；流式请求以 SSE 逐块转发，错误记入 stderr 并触发多节点故障转移。`/health` 报告请求数、上游失败数和监听地址。
+`/v1` 前缀的端点同时兼容 `/models`、`/chat/completions` 及 `/api/v1`、`/api/v3`、`/api/paas/v4`、`/v1beta` 等常见别名。`/v1/models` 拉取上游列表并只保留免费模型；上游请求统一使用 `User-Agent: opencode/1.0`，流式请求以 SSE 逐块转发并在失败时切换多节点。`/health` 报告请求数和监听地址信息。
 
 ## 前端页面
 

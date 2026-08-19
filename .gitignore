@@ -3,6 +3,7 @@
 /dist
 /packages
 /opencode-free-api
+/.claude
 
 # Android build outputs
 /android/.gradle
