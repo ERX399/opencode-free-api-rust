@@ -322,10 +322,11 @@ impl App {
             Err(_) => return bad_request(),
         };
         let stream = is_stream_request(&payload);
+        let thinking = thinking_mode(&payload);
         let body = self.remap_chat_body(payload);
         let accept = request_header(request, "Accept");
         if stream {
-            return self.chat_stream(body, accept.as_deref());
+            return self.chat_stream(body, accept.as_deref(), thinking);
         }
         match self.upstream(
             "/chat/completions",
@@ -334,7 +335,14 @@ impl App {
             accept.as_deref(),
             false,
         ) {
-            Ok(response) => proxy_response(response),
+            Ok(response) => {
+                if thinking {
+                    let (parts, mut body) = response.into_parts();
+                    ensure_completion_reasoning(&mut body);
+                    return proxy_response(http::Response::from_parts(parts, body));
+                }
+                proxy_response(response)
+            }
             Err(error) => {
                 if (400..500).contains(&error.status) && !error.body.is_empty() {
                     response(
@@ -368,6 +376,18 @@ impl App {
                 payload["model"] = Value::String(original);
             }
         }
+        // reasoning.effort 写法归一到 reasoning_effort，两种写法都能触发思考模式；
+        // 已有显式 reasoning_effort 时优先保留原值
+        if payload.get("reasoning_effort").is_none() {
+            if let Some(effort) = payload
+                .get("reasoning")
+                .and_then(|reasoning| reasoning.get("effort"))
+                .and_then(Value::as_str)
+                .filter(|effort| !effort.is_empty())
+            {
+                payload["reasoning_effort"] = Value::String(effort.to_owned());
+            }
+        }
         // Codex/thinking 协议要求把推理内容回传给上游，否则上游报 400。
         // OpenCode Console (zen/v1) 期望在请求顶层带上 reasoning_content；
         // 客户端通常不回传，这里伪装一个空串让上游通过校验。
@@ -393,11 +413,14 @@ impl App {
         serde_json::to_vec(&payload).unwrap_or_default()
     }
 
-    fn chat_stream(&self, body: Vec<u8>, accept: Option<&str>) -> ResponseBox {
+    fn chat_stream(&self, body: Vec<u8>, accept: Option<&str>, thinking: bool) -> ResponseBox {
         match self.upstream("/chat/completions", Method::Post, body, accept, true) {
             Ok(response) => {
                 let status = response.status().as_u16();
-                let body = response.into_body();
+                let mut body = response.into_body();
+                if thinking {
+                    transform_stream_body(&mut body);
+                }
                 let mut headers = vec![
                     header("Content-Type", "text/event-stream; charset=utf-8"),
                     header("Cache-Control", "no-cache"),
@@ -786,6 +809,161 @@ fn thinking_mode(payload: &Value) -> bool {
             .get("reasoning_effort")
             .and_then(Value::as_str)
             .is_some_and(|value| !value.is_empty())
+        || payload
+            .get("reasoning")
+            .and_then(|reasoning| reasoning.get("effort"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+}
+
+// 思考模式下客户端期望响应必带 reasoning_content；
+// 实测上游 reasoning_tokens 记账不可靠（思考了也常报 0），
+// 因此只按"字段缺失"补空串，不看 token 数
+fn ensure_completion_reasoning(body: &mut Vec<u8>) {
+    let mut payload: Value = match serde_json::from_slice(body) {
+        Ok(payload) => payload,
+        Err(_) => return,
+    };
+    if payload.get("choices").is_none() {
+        return;
+    }
+    if !payload
+        .get("reasoning_content")
+        .is_some_and(Value::is_string)
+    {
+        payload["reasoning_content"] = Value::String(String::new());
+    }
+    if let Some(choices) = payload.get_mut("choices").and_then(Value::as_array_mut) {
+        for choice in choices {
+            if choice.get("reasoning_content").is_some() {
+                continue;
+            }
+            if let Some(message) = choice.get_mut("message") {
+                if !message
+                    .get("reasoning_content")
+                    .is_some_and(Value::is_string)
+                {
+                    message["reasoning_content"] = Value::String(String::new());
+                }
+            }
+        }
+    }
+    if let Ok(updated) = serde_json::to_vec(&payload) {
+        *body = updated;
+    }
+}
+
+// 从流里找一个带 id/model 的 chunk，借它的身份字段给兜底 chunk，
+// 否则严格的 OpenAI SDK 会因缺字段解析失败
+fn stream_chunk_identity(text: &str) -> Option<Value> {
+    for block in text.split("\n\n") {
+        let Some(data_line) = block.lines().find_map(|line| {
+            line.strip_prefix("data:")
+                .map(str::trim_start)
+                .filter(|value| !value.is_empty() && *value != "[DONE]")
+        }) else {
+            continue;
+        };
+        let Ok(payload) = serde_json::from_str::<Value>(data_line) else {
+            continue;
+        };
+        if payload.get("id").is_some() || payload.get("model").is_some() {
+            return Some(payload);
+        }
+    }
+    None
+}
+
+fn fallback_reasoning_chunk(text: &str) -> String {
+    let mut chunk = json!({ "choices": [{ "index": 0, "delta": { "reasoning_content": "" } }] });
+    if let Some(object) = chunk.as_object_mut() {
+        if let Some(identity) = stream_chunk_identity(text) {
+            for key in ["id", "object", "created", "model"] {
+                if let Some(value) = identity.get(key) {
+                    object.insert(key.to_owned(), value.clone());
+                }
+            }
+        }
+    }
+    format!("data: {chunk}\n\n")
+}
+
+// 思考模式下上游已经发过 reasoning_content delta 就不再动手；
+// reasoning_tokens 实测记账不可靠，不作为补偿依据
+fn stream_has_reasoning(text: &str) -> bool {
+    text.contains("\"reasoning_content\"")
+}
+
+fn inject_reasoning_into_finish_block(block: &str) -> Option<String> {
+    let data_line = block.lines().find_map(|line| {
+        line.strip_prefix("data:")
+            .map(str::trim_start)
+            .filter(|value| !value.is_empty() && *value != "[DONE]")
+    })?;
+    let mut payload: Value = serde_json::from_str(data_line).ok()?;
+    let mut modified = false;
+    if let Some(choices) = payload.get_mut("choices").and_then(Value::as_array_mut) {
+        for choice in choices {
+            if choice.get("finish_reason").is_none() {
+                continue;
+            }
+            if let Some(delta) = choice.get_mut("delta") {
+                if delta.get("content").is_none() && delta.get("reasoning_content").is_none() {
+                    delta["reasoning_content"] = Value::String(String::new());
+                    modified = true;
+                }
+            }
+        }
+    }
+    if !modified {
+        return None;
+    }
+    let rewritten = serde_json::to_string(&payload).ok()?;
+    let mut rebuilt = Vec::new();
+    let mut replaced = false;
+    for line in block.lines() {
+        if !replaced
+            && line
+                .strip_prefix("data:")
+                .is_some_and(|value| !value.trim().is_empty())
+        {
+            rebuilt.push(format!("data: {rewritten}"));
+            replaced = true;
+        } else {
+            rebuilt.push(line.to_owned());
+        }
+    }
+    Some(rebuilt.join("\n") + "\n\n")
+}
+
+// 思考模式下上游从头到尾没发过 reasoning_content delta 时，
+// 在 finish chunk 里补一个空串，客户端才不会抱怨"推理内容缺失"
+fn transform_stream_body(body: &mut Vec<u8>) {
+    let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
+    if stream_has_reasoning(&text) {
+        return;
+    }
+    let fallback = fallback_reasoning_chunk(&text);
+    let mut transformed = String::with_capacity(text.len() + fallback.len());
+    let mut injected = false;
+    for block in text.split_inclusive("\n\n") {
+        if !injected {
+            if let Some(rewritten) = inject_reasoning_into_finish_block(block) {
+                transformed.push_str(&rewritten);
+                injected = true;
+                continue;
+            }
+            if block.lines().any(|line| line.trim() == "data: [DONE]") {
+                transformed.push_str(&fallback);
+                injected = true;
+            }
+        }
+        transformed.push_str(block);
+    }
+    if !injected {
+        transformed.push_str(&fallback);
+    }
+    *body = transformed.into_bytes();
 }
 
 fn is_health_path(path: &str) -> bool {
@@ -1115,6 +1293,8 @@ mod tests {
         assert!(thinking_mode(&json!({"thinking": {"enabled": true}})));
         assert!(!thinking_mode(&json!({"thinking": {"enabled": false}})));
         assert!(thinking_mode(&json!({"reasoning_effort": "high"})));
+        assert!(thinking_mode(&json!({"reasoning": {"effort": "high"}})));
+        assert!(!thinking_mode(&json!({"reasoning": {"effort": ""}})));
         assert!(!thinking_mode(&json!({"messages": []})));
     }
 
@@ -1139,5 +1319,369 @@ mod tests {
             .find(|m| m["role"] == "assistant")
             .expect("assistant message present");
         assert_eq!(assistant["reasoning_content"], json!(""));
+    }
+
+    #[test]
+    fn remap_merges_reasoning_effort_object_form() {
+        let app = app_for_test();
+        let body = app.remap_chat_body(json!({
+            "model": "some-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning": {"effort": "high"}
+        }));
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(parsed["reasoning_effort"], json!("high"));
+        assert_eq!(parsed["reasoning_content"], json!(""), "thinking mode should kick in via merged effort");
+    }
+
+    #[test]
+    fn remap_prefers_explicit_reasoning_effort() {
+        let app = app_for_test();
+        let body = app.remap_chat_body(json!({
+            "model": "some-model",
+            "messages": [],
+            "reasoning_effort": "low",
+            "reasoning": {"effort": "high"}
+        }));
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(parsed["reasoning_effort"], json!("low"));
+    }
+
+    #[test]
+    fn ensure_completion_reasoning_injects_when_tokens_only() {
+        let mut body = serde_json::to_vec(&json!({
+            "id": "chatcmpl-1",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens": 10, "completion_tokens_details": {"reasoning_tokens": 5}}
+        }))
+        .unwrap();
+        ensure_completion_reasoning(&mut body);
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(parsed["reasoning_content"], json!(""));
+        assert_eq!(parsed["choices"][0]["message"]["reasoning_content"], json!(""));
+    }
+
+    #[test]
+    fn ensure_completion_reasoning_keeps_existing_content() {
+        let mut body = serde_json::to_vec(&json!({
+            "reasoning_content": "thoughts",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi", "reasoning_content": "inner"}}],
+            "usage": {"completion_tokens_details": {"reasoning_tokens": 5}}
+        }))
+        .unwrap();
+        ensure_completion_reasoning(&mut body);
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(parsed["reasoning_content"], json!("thoughts"));
+        assert_eq!(parsed["choices"][0]["message"]["reasoning_content"], json!("inner"));
+    }
+
+    #[test]
+    fn ensure_completion_reasoning_injects_without_usage_too() {
+        let mut body = serde_json::to_vec(&json!({
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"completion_tokens": 10}
+        }))
+        .unwrap();
+        ensure_completion_reasoning(&mut body);
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(parsed["reasoning_content"], json!(""));
+        assert_eq!(parsed["choices"][0]["message"]["reasoning_content"], json!(""));
+    }
+
+    #[test]
+    fn ensure_completion_reasoning_noop_without_choices() {
+        let original = json!({"error": {"message": "boom"}});
+        let mut body = serde_json::to_vec(&original).unwrap();
+        ensure_completion_reasoning(&mut body);
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn ensure_completion_reasoning_ignores_non_json() {
+        let mut body = b"<html>not json</html>".to_vec();
+        ensure_completion_reasoning(&mut body);
+        assert_eq!(body, b"<html>not json</html>");
+    }
+
+    #[test]
+    fn stream_has_reasoning_detects_deltas() {
+        let seen = r#"data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}
+data: [DONE]"#;
+        assert!(stream_has_reasoning(seen));
+        assert!(!stream_has_reasoning("data: {\"usage\":{}}\n"));
+    }
+
+    #[test]
+    fn transform_stream_injects_into_finish_chunk() {
+        let stream = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":7}}}\n\ndata: [DONE]\n\n";
+        let mut body = stream.as_bytes().to_vec();
+        transform_stream_body(&mut body);
+        let transformed = String::from_utf8(body).unwrap();
+        let finish_line = transformed
+            .lines()
+            .find(|line| line.contains("finish_reason"))
+            .expect("finish chunk present");
+        assert!(
+            finish_line.contains("\"reasoning_content\":\"\""),
+            "finish chunk should carry the fallback reasoning_content, got {finish_line}"
+        );
+        assert_eq!(transformed.matches("reasoning_content").count(), 1);
+    }
+
+    #[test]
+    fn transform_stream_appends_fallback_without_finish_chunk() {
+        let stream = "data: {\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":7}}}\n\ndata: [DONE]\n\n";
+        let mut body = stream.as_bytes().to_vec();
+        transform_stream_body(&mut body);
+        let transformed = String::from_utf8(body).unwrap();
+        let done = transformed.rfind("data: [DONE]").expect("DONE present");
+        let fallback = transformed
+            .rfind("reasoning_content")
+            .expect("fallback chunk present");
+        assert!(fallback < done, "fallback chunk must precede [DONE]");
+    }
+
+    #[test]
+    fn transform_stream_fallback_carries_chunk_identity() {
+        let stream = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":7}}}\n\ndata: [DONE]\n\n";
+        let mut body = stream.as_bytes().to_vec();
+        transform_stream_body(&mut body);
+        let transformed = String::from_utf8(body).unwrap();
+        let fallback_line = transformed
+            .lines()
+            .find(|line| line.contains("reasoning_content"))
+            .expect("fallback chunk present");
+        let payload: Value =
+            serde_json::from_str(fallback_line.strip_prefix("data: ").unwrap()).unwrap();
+        assert_eq!(payload["id"], json!("chatcmpl-1"));
+        assert_eq!(payload["object"], json!("chat.completion.chunk"));
+        assert_eq!(payload["model"], json!("m"));
+    }
+
+    #[test]
+    fn transform_stream_fallback_without_identity_still_valid() {
+        let stream = "data: {\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":7}}}\n\ndata: [DONE]\n\n";
+        let mut body = stream.as_bytes().to_vec();
+        transform_stream_body(&mut body);
+        let transformed = String::from_utf8(body).unwrap();
+        let fallback_line = transformed
+            .lines()
+            .find(|line| line.contains("reasoning_content"))
+            .expect("fallback chunk present");
+        let payload: Value =
+            serde_json::from_str(fallback_line.strip_prefix("data: ").unwrap()).unwrap();
+        assert_eq!(payload["choices"][0]["delta"]["reasoning_content"], json!(""));
+    }
+
+    #[test]
+    fn transform_stream_handles_crlf() {
+        let stream = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":3}}}\r\n\r\ndata: [DONE]\r\n\r\n";
+        let mut body = stream.as_bytes().to_vec();
+        transform_stream_body(&mut body);
+        let transformed = String::from_utf8(body).unwrap();
+        assert!(transformed.contains("\"reasoning_content\":\"\""));
+    }
+
+    #[test]
+    fn transform_stream_noop_when_upstream_already_streams_reasoning() {
+        let stream = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking...\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":7}}}\n\ndata: [DONE]\n\n";
+        let mut body = stream.as_bytes().to_vec();
+        let original = body.clone();
+        transform_stream_body(&mut body);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn transform_stream_injects_without_any_usage_chunk() {
+        let stream = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        let mut body = stream.as_bytes().to_vec();
+        transform_stream_body(&mut body);
+        let transformed = String::from_utf8(body).unwrap();
+        assert!(transformed.contains("\"reasoning_content\":\"\""));
+    }
+
+    fn start_mock_upstream(
+        capture: Arc<Mutex<Vec<u8>>>,
+        response_body: Vec<u8>,
+        content_type: &'static str,
+    ) -> String {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        thread::spawn(move || {
+            for mut request in server.incoming_requests() {
+                let mut body = Vec::new();
+                let _ = request.as_reader().read_to_end(&mut body);
+                *capture.lock().unwrap() = body;
+                let len = response_body.len();
+                let resp = Response::new(
+                    StatusCode(200),
+                    vec![Header::from_bytes("Content-Type", content_type).unwrap()],
+                    Cursor::new(response_body.clone()),
+                    Some(len),
+                    None,
+                );
+                let _ = request.respond(resp);
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn start_app_server(app: App) -> String {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let (tx, rx) = mpsc::channel::<HttpRequest>();
+        let rx = Arc::new(Mutex::new(rx));
+        for _ in 0..2 {
+            let rx = Arc::clone(&rx);
+            let app = app.clone();
+            thread::spawn(move || {
+                while let Ok(mut request) = rx.lock().expect("request queue lock").recv() {
+                    let response = app.handle(&mut request);
+                    let _ = request.respond(response);
+                }
+            });
+        }
+        thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let _ = tx.send(request);
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[test]
+    fn e2e_request_side_injects_reasoning_content() {
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let upstream_body = serde_json::to_vec(&json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens": 3}
+        }))
+        .unwrap();
+        let upstream_url =
+            start_mock_upstream(Arc::clone(&capture), upstream_body, "application/json");
+        let app = App {
+            nodes: vec![upstream_url],
+            ..app_for_test()
+        };
+        let base = start_app_server(app);
+        let client = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build()
+            .new_agent();
+        let request_body = json!({
+            "model": "some-model",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"}
+            ],
+            "reasoning_effort": "high",
+            "stream": false
+        });
+        let response = client
+            .post(&format!("{base}/v1/chat/completions"))
+            .header("Content-Type", "application/json")
+            .send(serde_json::to_vec(&request_body).unwrap())
+            .expect("app should answer");
+        assert_eq!(response.status().as_u16(), 200);
+        let forwarded: Value =
+            serde_json::from_slice(&capture.lock().unwrap()).expect("forwarded body is JSON");
+        assert_eq!(
+            forwarded["reasoning_content"],
+            json!(""),
+            "top-level reasoning_content should be injected, got {forwarded}"
+        );
+        let assistant = forwarded["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("assistant message forwarded");
+        assert_eq!(assistant["reasoning_content"], json!(""));
+    }
+
+    #[test]
+    fn e2e_response_side_adds_missing_reasoning_content() {
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let upstream_body = serde_json::to_vec(&json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "answer"}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens": 12, "completion_tokens_details": {"reasoning_tokens": 9}}
+        }))
+        .unwrap();
+        let upstream_url =
+            start_mock_upstream(Arc::clone(&capture), upstream_body, "application/json");
+        let app = App {
+            nodes: vec![upstream_url],
+            ..app_for_test()
+        };
+        let base = start_app_server(app);
+        let client = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build()
+            .new_agent();
+        let request_body = json!({
+            "model": "some-model",
+            "messages": [{"role": "user", "content": "think hard"}],
+            "reasoning_effort": "high",
+            "stream": false
+        });
+        let response = client
+            .post(&format!("{base}/v1/chat/completions"))
+            .header("Content-Type", "application/json")
+            .send(serde_json::to_vec(&request_body).unwrap())
+            .expect("app should answer");
+        let payload: Value =
+            serde_json::from_slice(&read_body(response.into_body())).expect("JSON response");
+        assert_eq!(
+            payload["reasoning_content"],
+            json!(""),
+            "missing reasoning_content should be filled, got {payload}"
+        );
+        assert_eq!(payload["choices"][0]["message"]["reasoning_content"], json!(""));
+    }
+
+    #[test]
+    fn e2e_stream_side_adds_missing_reasoning_delta() {
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens_details\":{\"reasoning_tokens\":7}}}\n\ndata: [DONE]\n\n";
+        let upstream_url = start_mock_upstream(
+            Arc::clone(&capture),
+            sse.as_bytes().to_vec(),
+            "text/event-stream; charset=utf-8",
+        );
+        let app = App {
+            nodes: vec![upstream_url],
+            ..app_for_test()
+        };
+        let base = start_app_server(app);
+        let client = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build()
+            .new_agent();
+        let request_body = json!({
+            "model": "some-model",
+            "messages": [{"role": "user", "content": "think"}],
+            "reasoning_effort": "high",
+            "stream": true
+        });
+        let response = client
+            .post(&format!("{base}/v1/chat/completions"))
+            .header("Content-Type", "application/json")
+            .send(serde_json::to_vec(&request_body).unwrap())
+            .expect("app should answer");
+        let body = read_body(response.into_body());
+        let text = String::from_utf8(body).unwrap();
+        let finish_line = text
+            .lines()
+            .find(|line| line.contains("finish_reason"))
+            .expect("finish chunk present");
+        assert!(
+            finish_line.contains("\"reasoning_content\":\"\""),
+            "finish chunk should carry fallback reasoning_content, got {finish_line}"
+        );
     }
 }
