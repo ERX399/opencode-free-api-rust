@@ -8,7 +8,7 @@ _✨ OpenAI 兼容反代 · 单文件部署 ✨_
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-0.1.8-blue.svg)](../../releases)
 [![GitHub](https://img.shields.io/badge/作者-ERX399-blue)](https://github.com/ERX399)
 
 [简体中文](./README.md) | [English](./README.en.md)
@@ -56,6 +56,14 @@ AUTH_TOKEN=my-secret \
 | `*` | 其他 | 透传上游，失败则切换下一节点 |
 
 `/v1` 前缀的端点同时兼容 `/models`、`/chat/completions` 及 `/api/v1`、`/api/v3`、`/api/paas/v4`、`/v1beta` 等常见别名。`/v1/models` 拉取上游列表并只保留免费模型；上游请求统一使用 `User-Agent: opencode/1.0`，流式请求以 SSE 逐块转发并在失败时切换多节点。`/health` 报告请求数和监听地址信息。
+
+## 思考模式（thinking）
+
+请求里带 `thinking.enabled`、`reasoning_effort` 或 `reasoning.effort` 即视为思考模式：
+
+- **请求侧**：自动在顶层与各 assistant 消息注入空的 `reasoning_content`，客户端不回传推理内容时也能通过上游（OpenCode Console）的校验
+- **响应侧**：上游只返回 `reasoning_tokens` 却不带 `reasoning_content` 时，非流式响应与流式 SSE 都会补发空串，避免 ChatGPT-Next-Web 等客户端报"未找到推理内容"
+- 上游返回了真实的 `reasoning_content` 时原样透传，不做任何改写
 
 ## 前端页面
 

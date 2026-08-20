@@ -8,7 +8,7 @@ _✨ OpenAI-compatible reverse proxy · single-binary deploy ✨_
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-0.1.8-blue.svg)](../../releases)
 [![GitHub](https://img.shields.io/badge/author-ERX399-blue)](https://github.com/ERX399)
 
 [English](./README.en.md) | [简体中文](./README.md)
@@ -56,6 +56,14 @@ AUTH_TOKEN=my-secret \
 | `*` | anything else | Transparently forwarded upstream; failure triggers failover to the next node |
 
 `/v1`-prefixed endpoints also accept `/models`, `/chat/completions` and common aliases like `/api/v1`, `/api/v3`, `/api/paas/v4`, `/v1beta`. `/v1/models` fetches the upstream list and keeps only free models; upstream requests use `User-Agent: opencode/1.0`, streaming requests are forwarded chunk-by-chunk as SSE and fail over to the next node on errors. `/health` reports request count and listen address information.
+
+## Thinking mode
+
+A request carrying `thinking.enabled`, `reasoning_effort`, or `reasoning.effort` is treated as thinking mode:
+
+- **Request side**: an empty `reasoning_content` is injected at the top level and into each assistant message, so upstream (OpenCode Console) validation passes even when the client does not echo reasoning back
+- **Response side**: when upstream reports only `reasoning_tokens` without `reasoning_content`, both non-streaming responses and streaming SSE emit an empty-string fallback, keeping clients like ChatGPT-Next-Web from complaining about missing reasoning
+- Real `reasoning_content` from upstream passes through untouched
 
 ## Web UI
 
