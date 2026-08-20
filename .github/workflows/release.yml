@@ -105,10 +105,10 @@ jobs:
           upx --best --lzma -q dist/opencode-free-api-linux-x86_64
           upx --best --lzma -q dist/opencode-free-api-linux-aarch64
           upx --best --lzma -q dist/opencode-free-api-windows-x86_64.exe
-          upx --best --lzma -q dist/opencode-free-api-macos-x86_64
-          upx --best --lzma -q dist/opencode-free-api-macos-arm64
-          # Android binaries are not UPX-compressed: UPX runtime stubs trip
-          # Android 10+ W^X memory protection and fail to launch.
+          # macOS binaries are not UPX-compressed: UPX cannot pack Mach-O
+          # without --force-macos, and compressed macOS builds mislaunch.
+          # Android binaries are not UPX-compressed either: UPX runtime stubs
+          # trip Android 10+ W^X memory protection and fail to launch.
 
       - name: Package archives
         run: bash scripts/make_packages.sh
