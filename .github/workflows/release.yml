@@ -81,6 +81,9 @@ jobs:
           cargo build --release --target aarch64-linux-android
           cargo build --release --target x86_64-linux-android
 
+      - name: Install upx and zip
+        run: sudo apt-get install -y -qq upx zip
+
       - name: Package artifacts
         run: |
           mkdir -p dist
@@ -99,7 +102,6 @@ jobs:
           cp target/x86_64-linux-android/release/opencode-free-api \
              dist/opencode-free-api-android-x86_64
           chmod +x dist/*
-          sudo apt-get update -qq && sudo apt-get install -y -qq upx zip
           upx --best --lzma -q dist/opencode-free-api-linux-x86_64
           upx --best --lzma -q dist/opencode-free-api-linux-aarch64
           upx --best --lzma -q dist/opencode-free-api-windows-x86_64.exe

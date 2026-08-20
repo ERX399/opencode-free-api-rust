@@ -19,6 +19,13 @@ use ureq::Agent;
 type ResponseBox = tiny_http::ResponseBox;
 type UpstreamResponse = http::Response<Vec<u8>>;
 
+#[derive(Debug)]
+struct UpstreamError {
+    status: u16,
+    message: String,
+    body: Vec<u8>,
+}
+
 const MAX_BODY_BYTES: u64 = 64 << 20;
 const DEFAULT_NODE: &str = "https://opencode.ai/zen/v1";
 const EXTRA_FREE_MODELS: &[&str] = &["big-pickle"];
@@ -289,7 +296,7 @@ impl App {
         let response =
             match self.upstream("/models", Method::Get, Vec::new(), accept.as_deref(), false) {
                 Ok(response) => response,
-                Err(message) => return error_response(502, "upstream_error", &message),
+                Err(error) => return error_response(error.status, "upstream_error", &error.message),
             };
         let payload: Value = match serde_json::from_slice(&response.into_body()).ok() {
             Some(payload) => payload,
@@ -328,7 +335,18 @@ impl App {
             false,
         ) {
             Ok(response) => proxy_response(response),
-            Err(message) => error_response(502, "upstream_error", &message),
+            Err(error) => {
+                if (400..500).contains(&error.status) && !error.body.is_empty() {
+                    response(
+                        error.status,
+                        error.body,
+                        Some("application/json; charset=utf-8"),
+                        None,
+                    )
+                } else {
+                    error_response(error.status, "upstream_error", &error.message)
+                }
+            }
         }
     }
 
@@ -350,6 +368,28 @@ impl App {
                 payload["model"] = Value::String(original);
             }
         }
+        // Codex/thinking 协议要求把推理内容回传给上游，否则上游报 400。
+        // OpenCode Console (zen/v1) 期望在请求顶层带上 reasoning_content；
+        // 客户端通常不回传，这里伪装一个空串让上游通过校验。
+        if thinking_mode(&payload) {
+            if !payload
+                .get("reasoning_content")
+                .is_some_and(Value::is_string)
+            {
+                payload["reasoning_content"] = Value::String(String::new());
+            }
+            if let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) {
+                for message in messages {
+                    if message.get("role").and_then(Value::as_str) == Some("assistant")
+                        && !message
+                            .get("reasoning_content")
+                            .is_some_and(Value::is_string)
+                    {
+                        message["reasoning_content"] = Value::String(String::new());
+                    }
+                }
+            }
+        }
         serde_json::to_vec(&payload).unwrap_or_default()
     }
 
@@ -365,7 +405,18 @@ impl App {
                 append_cors(&mut headers);
                 Response::new(StatusCode(status), headers, Cursor::new(body), None, None).boxed()
             }
-            Err(message) => error_response(502, "upstream_error", &message),
+            Err(error) => {
+                if (400..500).contains(&error.status) && !error.body.is_empty() {
+                    response(
+                        error.status,
+                        error.body,
+                        Some("text/event-stream; charset=utf-8"),
+                        None,
+                    )
+                } else {
+                    error_response(error.status, "upstream_error", &error.message)
+                }
+            }
         }
     }
 
@@ -486,9 +537,13 @@ impl App {
         body: Vec<u8>,
         accept: Option<&str>,
         stream: bool,
-    ) -> Result<UpstreamResponse, String> {
+    ) -> Result<UpstreamResponse, UpstreamError> {
         if self.nodes.is_empty() {
-            return Err("no upstream nodes configured".to_string());
+            return Err(UpstreamError {
+                status: 502,
+                message: "no upstream nodes configured".to_string(),
+                body: Vec::new(),
+            });
         }
         let agent = if stream {
             &self.stream_client
@@ -515,8 +570,22 @@ impl App {
             match outcome {
                 Ok(response) => {
                     if !response.status().is_success() {
-                        let message = format!("{node}: HTTP {}", response.status());
+                        let status = response.status();
+                        let body_bytes = response.into_body();
+                        let body_str = String::from_utf8_lossy(&body_bytes).trim().to_owned();
+                        let message = if body_str.is_empty() {
+                            format!("{node}: HTTP {status}")
+                        } else {
+                            format!("{node}: HTTP {status} - {body_str}")
+                        };
                         eprintln!("上游请求失败 {message}");
+                        if status.is_client_error() {
+                            return Err(UpstreamError {
+                                status: status.as_u16(),
+                                message,
+                                body: body_bytes,
+                            });
+                        }
                         failures.push(message);
                         continue;
                     }
@@ -531,7 +600,11 @@ impl App {
                 }
             }
         }
-        Err(failures.join("; "))
+        Err(UpstreamError {
+            status: 502,
+            message: failures.join("; "),
+            body: Vec::new(),
+        })
     }
 
     fn forward(&self, request: &mut HttpRequest, method: &Method, full_path: &str) -> ResponseBox {
@@ -701,6 +774,18 @@ fn is_stream_request(payload: &Value) -> bool {
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn thinking_mode(payload: &Value) -> bool {
+    payload
+        .get("thinking")
+        .and_then(|value| value.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || payload
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
 }
 
 fn is_health_path(path: &str) -> bool {
@@ -1023,5 +1108,36 @@ mod tests {
             parsed["model"], original,
             "chat body should have been remapped to the real -free id after priming, got {parsed}"
         );
+    }
+
+    #[test]
+    fn thinking_mode_detects_thinking_and_effort() {
+        assert!(thinking_mode(&json!({"thinking": {"enabled": true}})));
+        assert!(!thinking_mode(&json!({"thinking": {"enabled": false}})));
+        assert!(thinking_mode(&json!({"reasoning_effort": "high"})));
+        assert!(!thinking_mode(&json!({"messages": []})));
+    }
+
+    #[test]
+    fn remap_injects_empty_reasoning_in_thinking_mode() {
+        let app = app_for_test();
+        let body = app.remap_chat_body(json!({
+            "model": "some-model",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"}
+            ],
+            "thinking": {"enabled": true},
+            "stream": true
+        }));
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(parsed["reasoning_content"], json!(""));
+        let assistant = parsed["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("assistant message present");
+        assert_eq!(assistant["reasoning_content"], json!(""));
     }
 }
