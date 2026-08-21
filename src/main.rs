@@ -28,7 +28,6 @@ struct UpstreamError {
 
 const MAX_BODY_BYTES: u64 = 64 << 20;
 const DEFAULT_NODE: &str = "https://opencode.ai/zen/v1";
-const EXTRA_FREE_MODELS: &[&str] = &["big-pickle"];
 const FREE_MAP_TTL: u64 = 60;
 const UPSTREAM_USER_AGENT: &str = "opencode/1.0";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -497,8 +496,7 @@ impl App {
     }
 
     fn is_free_model(&self, id: &str) -> bool {
-        let lower = id.to_lowercase();
-        lower.contains("free") || EXTRA_FREE_MODELS.iter().any(|extra| lower == *extra)
+        id.to_lowercase().contains("free")
     }
 
     fn refresh_free_map(&self) {
