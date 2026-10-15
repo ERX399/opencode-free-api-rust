@@ -17,7 +17,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           # web 状态页与版本输出使用 CARGO_PKG_VERSION，强制与 tag 保持一致
-          sed -i "0,/^version = \".*\"/s//version = \"${VERSION:-0.0.0}\"/" Cargo.toml
+          sed -i "s/^version = .*/version = \"${VERSION:-0.0.0}\"/" Cargo.toml
       - name: Install rustup and targets
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
