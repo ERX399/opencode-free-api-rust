@@ -30,6 +30,16 @@
             android:name=".ProxyService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".ProxyTileService"
+            android:exported="true"
+            android:icon="@android:drawable/ic_popup_sync"
+            android:label="OC 代理"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <receiver
             android:name=".BootReceiver"
