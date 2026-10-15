@@ -19,7 +19,7 @@ public class ProxyService extends Service {
     private static final String TAG = "OCProxy";
     private static final String CHANNEL_ID = "proxy";
     private static final int NOTIF_ID = 1;
-    private static final String ACTION_STOP = "com.opencode.freeapi.STOP";
+    public static final String ACTION_STOP = "com.opencode.freeapi.STOP";
     private static final String ACTION_RESTART = "com.opencode.freeapi.RESTART";
     private static final String ACTION_PING = "com.opencode.freeapi.PING";
     private Process process;
