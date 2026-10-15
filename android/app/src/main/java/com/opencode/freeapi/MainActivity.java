@@ -29,6 +29,15 @@ public class MainActivity extends Activity {
         setupWebView();
     }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        // 通知栏点击保活：用户交互 → 重入前台服务，刷新系统“最近活跃”权重
+        if (intent != null && "com.opencode.freeapi.PING".equals(intent.getAction())) {
+            startProxyService();
+        }
+    }
+
     private void requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
