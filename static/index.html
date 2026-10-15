@@ -37,12 +37,9 @@
     background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
     background-position: 0 0, 0 0, 0 0, 0 0;
     min-height: 100vh;
-    animation: gridScroll 3s linear infinite;
   }
-  @keyframes gridScroll {
-    from { background-position: 0% 0%, 0% 0%, 0px 0px, 0px 0px; }
-    to   { background-position: 0% 0%, 0% 0%, -40px 40px, -40px 40px; }
-  }
+  /* 背景网格滚动动画已移除：全屏多层渐变 + background-position 动画
+     在移动 WebView 中持续触发整页重绘，导致掉帧与发热。 */
   ::selection { background: rgba(204,120,92,.5); }
   .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; position: relative; }
   nav { padding: 20px 0; display: flex; justify-content: space-between; align-items: center; }
@@ -52,6 +49,9 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #5a544a; }
   .dot.ok { background: #4a9d6b; animation: pulse 2s ease-in-out infinite; box-shadow: 0 0 8px rgba(74,157,107,0.6); }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
   header { padding: 72px 0 56px; text-align: center; }
   .eyebrow { font-size: 13px; color: var(--accent); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 20px; }
   h1 { font-family: 'Newsreader', serif; font-weight: 400; font-size: clamp(40px, 6vw, 72px); line-height: 1.05; letter-spacing: -0.025em; margin-bottom: 24px; }
@@ -196,6 +196,7 @@
   }
 
   async function poll() {
+    if (document.hidden) return;
     try {
       const r = await fetch(base + '/health');
       const j = await r.json();
@@ -257,6 +258,11 @@
   checkUpdate();
   setInterval(tick, 1000);
   setInterval(poll, 5000);
+  // 页面不可见时停止所有轮询，避免后台 WebView 持续耗电
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    poll(); loadModels();
+  });
 </script>
 <noscript>
   <style>
