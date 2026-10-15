@@ -6,6 +6,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
+        OnceLock,
         mpsc,
     },
     thread,
@@ -29,7 +30,10 @@ struct UpstreamError {
 const MAX_BODY_BYTES: u64 = 64 << 20;
 const DEFAULT_NODE: &str = "https://opencode.ai/zen/v1";
 const FREE_MAP_TTL: u64 = 60;
-const UPSTREAM_USER_AGENT: &str = "opencode/1.0";
+const DEFAULT_USER_AGENT: &str = "opencode/1.19.0";
+const UA_REFRESH_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const UA_URL: &str = "https://registry.npmjs.org/opencode-ai/latest";
+static USER_AGENT: OnceLock<String> = OnceLock::new();
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const INDEX_HTML: &str = include_str!("../static/index.html");
 
@@ -96,6 +100,7 @@ impl App {
 }
 
 fn main() {
+    spawn_user_agent_refresher();
     setup_console_utf8();
     let address = format!("{}:{}", env_or("HOST", "0.0.0.0"), env_or("PORT", "8788"));
     let app = App::from_env();
@@ -178,11 +183,48 @@ fn add_token<B>(
     mut builder: ureq::RequestBuilder<B>,
     token: &Option<String>,
 ) -> ureq::RequestBuilder<B> {
-    builder = builder.header("User-Agent", UPSTREAM_USER_AGENT);
+    builder = builder.header("User-Agent", user_agent());
     if let Some(token) = token {
         builder = builder.header("Authorization", &format!("Bearer {token}"));
     }
     builder
+}
+
+fn user_agent() -> &'static str {
+    USER_AGENT.get().map(String::as_str).unwrap_or(DEFAULT_USER_AGENT)
+}
+
+fn fetch_latest_opencode_version() -> Option<String> {
+    let agent: Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .build()
+        .new_agent();
+    let response = agent.get(UA_URL).call().ok()?;
+    let body: Value = serde_json::from_slice(&read_body(response.into_body())).ok()?;
+    let version = body.get("version").and_then(Value::as_str)?;
+    if version.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        Some(format!("opencode/{version}"))
+    } else {
+        None
+    }
+}
+
+fn refresh_user_agent() {
+    if let Some(latest) = fetch_latest_opencode_version() {
+        USER_AGENT.set(latest).ok();
+    } else {
+        USER_AGENT.set(DEFAULT_USER_AGENT.to_string()).ok();
+    }
+}
+
+fn spawn_user_agent_refresher() {
+    refresh_user_agent();
+    thread::spawn(|| loop {
+        thread::sleep(UA_REFRESH_INTERVAL);
+        if let Some(latest) = fetch_latest_opencode_version() {
+            USER_AGENT.set(latest).ok();
+        }
+    });
 }
 
 fn read_body(body: ureq::Body) -> Vec<u8> {
@@ -1115,7 +1157,7 @@ mod tests {
         .call()
         .unwrap();
         handle.join().unwrap();
-        assert_eq!(rx.recv().unwrap().as_deref(), Some("opencode/1.0"));
+        assert!(rx.recv().unwrap().as_deref().is_some_and(|ua| ua.starts_with("opencode/")));
     }
 
     #[test]
