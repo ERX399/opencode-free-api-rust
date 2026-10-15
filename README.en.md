@@ -55,7 +55,7 @@ AUTH_TOKEN=my-secret \
 | `POST` | `/v1/chat/completions` | Chat completions, streaming SSE supported |
 | `*` | anything else | Transparently forwarded upstream; failure triggers failover to the next node |
 
-`/v1`-prefixed endpoints also accept `/models`, `/chat/completions` and common aliases like `/api/v1`, `/api/v3`, `/api/paas/v4`, `/v1beta`. `/v1/models` fetches the upstream list and keeps only free models; upstream requests use `User-Agent: opencode/1.0`, streaming requests are forwarded chunk-by-chunk as SSE and fail over to the next node on errors. `/health` reports request count and listen address information.
+`/v1`-prefixed endpoints also accept `/models`, `/chat/completions` and common aliases like `/api/v1`, `/api/v3`, `/api/paas/v4`, `/v1beta`. `/v1/models` fetches the upstream list and keeps only free models; upstream requests use `User-Agent: opencode/<version>` (auto-fetched from the npm registry opencode-ai package at startup and every 6h, falling back to the compiled-in default on failure), streaming requests are forwarded chunk-by-chunk as SSE and fail over to the next node on errors. `/health` reports request count and listen address information.
 
 ## Thinking mode
 
