@@ -164,6 +164,9 @@ jobs:
 
       - name: Build Rust binary for Android arm64
         run: |
+          # APK job 独立 checkout，Cargo.toml 已还原为仓库版本，需再次对齐 tag
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version = .*/version = \"${VERSION:-0.0.0}\"/" Cargo.toml
           export PATH="$HOME/.cargo/bin:$PATH"
           tc="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           export CC_aarch64_linux_android="$tc/aarch64-linux-android24-clang"
