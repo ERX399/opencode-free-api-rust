@@ -6,7 +6,6 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
-        OnceLock,
         mpsc,
     },
     thread,
@@ -28,12 +27,14 @@ struct UpstreamError {
 }
 
 const MAX_BODY_BYTES: u64 = 64 << 20;
-const DEFAULT_NODE: &str = "https://opencode.ai/zen/v1";
+const DEFAULT_NODE: &str = "https://opencode.ai/inference/v1";
 const FREE_MAP_TTL: u64 = 60;
-const DEFAULT_USER_AGENT: &str = "opencode/1.19.0";
-const UA_REFRESH_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-const UA_URL: &str = "https://registry.npmjs.org/opencode-ai/latest";
-static USER_AGENT: OnceLock<String> = OnceLock::new();
+// 对齐 OpenCode V2 App.useragent：opencode/<channel>/<version>/<client>
+const DEFAULT_USER_AGENT: &str = "opencode/latest/2.0.29/cli";
+const SESSION_TTL_MS: u64 = 30 * 60 * 1000;
+const ID_CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+// 上游按 x-opencode-session 归并会话；同一使用者复用同一个 session 直到过期。
+static SESSION: Mutex<Option<(u64, String)>> = Mutex::new(None);
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const INDEX_HTML: &str = include_str!("../static/index.html");
 
@@ -100,7 +101,6 @@ impl App {
 }
 
 fn main() {
-    spawn_user_agent_refresher();
     setup_console_utf8();
     let address = format!("{}:{}", env_or("HOST", "0.0.0.0"), env_or("PORT", "8788"));
     let app = App::from_env();
@@ -167,6 +167,42 @@ fn client(timeout: Duration, connect_timeout: Duration) -> Agent {
         .into()
 }
 
+// session ID 格式：`ses_` + descending() 时间戳低 48 位 hex(12) + 14 位 base62。
+// 上游会校验首 12 hex 是 ~(timestamp*0x1000+counter)，乱填一律 403 FreeTier。
+fn opencode_session_id(timestamp_ms: u64) -> String {
+    let value = !((timestamp_ms as u128) * 0x1000 + 1);
+    let mut time = String::with_capacity(12);
+    for shift in (0..6).rev() {
+        let byte = ((value >> (shift * 8)) & 0xff) as u8;
+        time.push_str(&format!("{byte:02x}"));
+    }
+    // hex 需小写；上面 format 已保证。再补 14 位随机 base62。
+    let mut seed = timestamp_ms ^ 0x9E37_79B9_7F4A_7C15;
+    let mut random = String::with_capacity(14);
+    for _ in 0..14 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let index = ((seed >> 33) % ID_CHARS.len() as u64) as usize;
+        random.push(ID_CHARS[index] as char);
+    }
+    format!("ses_{time}{random}")
+}
+
+fn current_session_id() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let mut guard = SESSION.lock().expect("session lock");
+    if let Some((at, id)) = guard.as_ref() {
+        if now.saturating_sub(*at) < SESSION_TTL_MS {
+            return id.clone();
+        }
+    }
+    let id = opencode_session_id(now);
+    *guard = Some((now, id.clone()));
+    id
+}
+
 fn add_headers<B>(
     mut builder: ureq::RequestBuilder<B>,
     accept: Option<&str>,
@@ -179,52 +215,54 @@ fn add_headers<B>(
     builder
 }
 
+// V2 免费层会话关联头。Authorization 优先使用显式 token，否则固定 Bearer public。
+fn add_v2_session_headers<B>(mut builder: ureq::RequestBuilder<B>, token: &Option<String>) -> ureq::RequestBuilder<B> {
+    builder = builder
+        .header("x-opencode-client", "cli")
+        .header("x-opencode-project", "global");
+    let session = current_session_id();
+    builder = builder
+        .header("x-opencode-session", &session)
+        .header("x-opencode-session-id", &session)
+        .header("x-session-affinity", &session)
+        .header("X-Session-Id", &session);
+    if token.is_none() {
+        builder = builder.header("Authorization", "Bearer public");
+    }
+    builder
+}
+
 fn add_token<B>(
     mut builder: ureq::RequestBuilder<B>,
     token: &Option<String>,
 ) -> ureq::RequestBuilder<B> {
-    builder = builder.header("User-Agent", user_agent());
+    builder = builder.header("User-Agent", DEFAULT_USER_AGENT);
     if let Some(token) = token {
         builder = builder.header("Authorization", &format!("Bearer {token}"));
     }
     builder
 }
 
-fn user_agent() -> &'static str {
-    USER_AGENT.get().map(String::as_str).unwrap_or(DEFAULT_USER_AGENT)
-}
-
-fn fetch_latest_opencode_version() -> Option<String> {
-    let agent: Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .build()
-        .new_agent();
-    let response = agent.get(UA_URL).call().ok()?;
-    let body: Value = serde_json::from_slice(&read_body(response.into_body())).ok()?;
-    let version = body.get("version").and_then(Value::as_str)?;
-    if version.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        Some(format!("opencode/{version}"))
-    } else {
-        None
-    }
-}
-
-fn refresh_user_agent() {
-    if let Some(latest) = fetch_latest_opencode_version() {
-        USER_AGENT.set(latest).ok();
-    } else {
-        USER_AGENT.set(DEFAULT_USER_AGENT.to_string()).ok();
-    }
-}
-
-fn spawn_user_agent_refresher() {
-    refresh_user_agent();
-    thread::spawn(|| loop {
-        thread::sleep(UA_REFRESH_INTERVAL);
-        if let Some(latest) = fetch_latest_opencode_version() {
-            USER_AGENT.set(latest).ok();
+// 上游免费层门禁：请求必须携带内置 read 工具（名字与参数 schema 均需一致），缺 read 一律 403。
+fn gate_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": "Reserved for the host runtime; do not call or select this function. Use tools explicitly supplied by the user instead.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File or directory to read"},
+                    "offset": {"type": "integer", "minimum": 0, "description": "Starting line or directory entry (1-based)"},
+                    "limit": {"type": "integer", "minimum": 0, "description": "Maximum lines or directory entries to read"}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            },
+            "strict": false
         }
-    });
+    })
 }
 
 fn read_body(body: ureq::Body) -> Vec<u8> {
@@ -373,16 +411,25 @@ impl App {
             "/chat/completions",
             Method::Post,
             body,
-            accept.as_deref(),
-            false,
+            Some("text/event-stream"),
+            true,
         ) {
             Ok(response) => {
-                if thinking {
-                    let (parts, mut body) = response.into_parts();
-                    ensure_completion_reasoning(&mut body);
+                // V2 上游只返回流式，非流式请求在本地聚合 SSE 为完整 JSON。
+                let (parts, body) = response.into_parts();
+                let status = parts.status.as_u16();
+                if !(200..300).contains(&status) {
                     return proxy_response(http::Response::from_parts(parts, body));
                 }
-                proxy_response(response)
+                match aggregate_sse(&body, thinking) {
+                    Ok(aggregated) => {
+                        let mut headers = vec![header("Content-Type", "application/json; charset=utf-8")];
+                        append_cors(&mut headers);
+                        let len = aggregated.len();
+                        Response::new(StatusCode(200), headers, Cursor::new(aggregated), Some(len), None).boxed()
+                    }
+                    Err(message) => error_response(502, "upstream_error", &message),
+                }
             }
             Err(error) => {
                 if (400..500).contains(&error.status) && !error.body.is_empty() {
@@ -451,6 +498,19 @@ impl App {
                 }
             }
         }
+        // V2 上游只接受流式。下游请求统一转成 stream:true，非流式请求由本地聚合。
+        // 若客户端未提供 tools，注入上游免费层门禁要求的 read 保留工具（schema 必须一致，否则 403）。
+        if payload.get("tools").and_then(Value::as_array).is_none_or(|t| t.is_empty()) {
+            payload["tools"] = json!([gate_tool()]);
+        }
+        if payload.get("tool_choice").is_some_and(|c| c == "none") {
+            // V2 拒绝 tool_choice:none，移除后靠保留工具描述约束
+            if let Some(obj) = payload.as_object_mut() {
+                obj.remove("tool_choice");
+            }
+        }
+        payload["stream"] = Value::Bool(true);
+        payload["stream_options"] = json!({"include_usage": true});
         serde_json::to_vec(&payload).unwrap_or_default()
     }
 
@@ -619,6 +679,11 @@ impl App {
             let outcome = match method {
                 Method::Post => {
                     let builder = add_headers(agent.post(&url), accept, &self.token);
+                    let builder = if stream {
+                        add_v2_session_headers(builder, &self.token)
+                    } else {
+                        builder
+                    };
                     builder
                         .header("Content-Type", "application/json")
                         .send(&body)
@@ -626,6 +691,11 @@ impl App {
                 }
                 Method::Get => {
                     let builder = add_headers(agent.get(&url), accept, &self.token);
+                    let builder = if path == "/models" {
+                        builder.header("Accept", "application/json")
+                    } else {
+                        builder
+                    };
                     builder.call().map(read_body_response)
                 }
                 _ => continue,
@@ -854,6 +924,103 @@ fn thinking_mode(payload: &Value) -> bool {
             .and_then(|reasoning| reasoning.get("effort"))
             .and_then(Value::as_str)
             .is_some_and(|value| !value.is_empty())
+}
+
+// 将上游 SSE 聚合为 OpenAI 非流式 JSON。thinking 时把 reasoning_content 合并进 message。
+fn aggregate_sse(sse: &[u8], thinking: bool) -> Result<Vec<u8>, String> {
+    let text = std::str::from_utf8(sse).map_err(|_| "upstream stream is not utf-8".to_owned())?;
+    let mut content = String::new();
+    let mut reasoning = String::new();
+    let mut finish_reason: Option<Value> = None;
+    let mut usage: Option<Value> = None;
+    let mut identity: Option<Value> = None;
+    let mut tool_calls: Vec<Value> = Vec::new();
+    for block in text.split("\n\n") {
+        let Some(data_line) = block.lines().find_map(|line| {
+            line.strip_prefix("data:")
+                .map(str::trim_start)
+                .filter(|value| !value.is_empty() && *value != "[DONE]")
+        }) else {
+            continue;
+        };
+        let Ok(payload) = serde_json::from_str::<Value>(data_line) else {
+            continue;
+        };
+        if identity.is_none() && (payload.get("id").is_some() || payload.get("model").is_some()) {
+            identity = Some(payload.clone());
+        }
+        if payload.get("usage").is_some_and(|value| !value.is_null()) {
+            usage = payload.get("usage").cloned();
+        }
+        let Some(choice) = payload.get("choices").and_then(Value::as_array).and_then(|c| c.first()) else {
+            continue;
+        };
+        if finish_reason.is_none() {
+            finish_reason = choice.get("finish_reason").cloned().filter(|v| !v.is_null());
+        }
+        let Some(delta) = choice.get("delta") else {
+            continue;
+        };
+        if let Some(part) = delta.get("reasoning_content").and_then(Value::as_str) {
+            reasoning.push_str(part);
+        }
+        if let Some(part) = delta.get("content").and_then(Value::as_str) {
+            content.push_str(part);
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                if tool_calls.len() <= index {
+                    tool_calls.resize_with(index + 1, || json!({"id": "", "type": "function", "function": {"name": "", "arguments": ""}}));
+                }
+                let slot = &mut tool_calls[index];
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    slot["id"] = Value::String(id.to_owned());
+                }
+                if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                    slot["function"]["name"] = Value::String(name.to_owned());
+                }
+                if let Some(args) = call.pointer("/function/arguments").and_then(Value::as_str) {
+                    if let Some(existing) = slot.pointer("/function/arguments").and_then(Value::as_str) {
+                        let merged = format!("{existing}{args}");
+                        slot["function"]["arguments"] = Value::String(merged);
+                    }
+                }
+            }
+        }
+    }
+    if content.is_empty() && reasoning.is_empty() && tool_calls.is_empty() {
+        return Err("upstream stream contained no content".to_owned());
+    }
+    let mut message = json!({"role": "assistant"});
+    if thinking && !reasoning.is_empty() {
+        message["reasoning_content"] = Value::String(reasoning);
+    }
+    if !content.is_empty() {
+        message["content"] = Value::String(content);
+    }
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = Value::Array(tool_calls);
+    }
+    let mut response = json!({
+        "object": "chat.completion",
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason.unwrap_or(Value::String("stop".to_owned()))
+        }]
+    });
+    if let Some(id) = &identity {
+        for key in ["id", "created", "model"] {
+            if let Some(value) = id.get(key) {
+                response[key] = value.clone();
+            }
+        }
+    }
+    if let Some(usage) = usage {
+        response["usage"] = usage;
+    }
+    serde_json::to_vec(&response).map_err(|error| error.to_string())
 }
 
 // 思考模式下客户端期望响应必带 reasoning_content；
