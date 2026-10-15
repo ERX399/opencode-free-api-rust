@@ -206,4 +206,3 @@ public class ProxyService extends Service {
             process = null;
         }
     }
-}
