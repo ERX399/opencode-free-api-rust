@@ -105,4 +105,28 @@ public class MainActivity extends Activity {
             super.onBackPressed();
         }
     }
+
+    // 页面退到后台：暂停 WebView 的 JS 定时器/渲染，避免后台耗电；
+    // 前台服务与 native 进程不受影响，代理照常工作
+    @Override
+    protected void onPause() {
+        if (webView != null) webView.onPause();
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) webView.onResume();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (webView != null) {
+            webView.destroy();
+            webView = null;
+        }
+        // 不 stopService：离开 Activity 后代理继续由前台服务保活
+        super.onDestroy();
+    }
 }
