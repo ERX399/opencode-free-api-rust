@@ -135,7 +135,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
+        with:
+          # 'tools' package was deprecated/removed from the SDK repo;
+          # only platform-tools is needed here (NDK is installed manually)
+          packages: platform-tools
       - name: Install Android NDK
         run: |
           ndk_version="r28b"
