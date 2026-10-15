@@ -6,10 +6,6 @@
 <meta name="darkreader-lock">
 <title>OpenCode Free API</title>
 <link rel="icon" type="image/x-icon" href="https://opencode.ai/favicon-v3.ico">
-<link rel="apple-touch-icon" href="https://opencode.ai/apple-touch-icon-v3.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg: #14110d;
@@ -26,24 +22,12 @@
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 32px rgba(0,0,0,0.25);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; line-height: 1.5; -webkit-font-smoothing: antialiased; }
-  body {
-    background-color: var(--bg);
-    background-image:
-      radial-gradient(circle at 20% 30%, rgba(204,120,92,0.08), transparent 40%),
-      radial-gradient(circle at 80% 70%, rgba(204,120,92,0.05), transparent 35%),
-      linear-gradient(var(--grid-line) 1px, transparent 1px),
-      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-    background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
-    background-position: 0 0, 0 0, 0 0, 0 0;
-    min-height: 100vh;
-  }
-  /* 背景网格滚动动画已移除：全屏多层渐变 + background-position 动画
-     在移动 WebView 中持续触发整页重绘，导致掉帧与发热。 */
+  html, body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  body { min-height: 100vh; }
   ::selection { background: rgba(204,120,92,.5); }
   .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; position: relative; }
   nav { padding: 20px 0; display: flex; justify-content: space-between; align-items: center; }
-  .brand { font-family: 'Newsreader', serif; font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
+  .brand { font-family: Georgia, 'Times New Roman', serif; font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
   .brand b { color: var(--accent); }
   .status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); padding: 6px 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 999px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #5a544a; }
@@ -54,7 +38,7 @@
   }
   header { padding: 72px 0 56px; text-align: center; }
   .eyebrow { font-size: 13px; color: var(--accent); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 20px; }
-  h1 { font-family: 'Newsreader', serif; font-weight: 400; font-size: clamp(40px, 6vw, 72px); line-height: 1.05; letter-spacing: -0.025em; margin-bottom: 24px; }
+  h1 { font-family: Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(40px, 6vw, 72px); line-height: 1.05; letter-spacing: -0.025em; margin-bottom: 24px; }
   h1 em { font-style: italic; color: var(--accent); }
   .sub { font-size: 18px; color: var(--text-muted); max-width: 620px; margin: 0 auto 36px; }
   .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
@@ -67,15 +51,15 @@
   .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; transition: transform .2s ease, background .2s ease, box-shadow .2s ease; }
   .card:hover { transform: translateY(-2px); background: var(--bg-card-hover); box-shadow: var(--shadow); }
   .card .ico { width: 40px; height: 40px; border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
-  .card h3 { font-family: 'Newsreader', serif; font-weight: 500; font-size: 20px; margin-bottom: 8px; }
+  .card h3 { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; font-size: 20px; margin-bottom: 8px; }
   .card p { font-size: 14px; color: var(--text-muted); }
   .card code, .endpoint code, .row code { font-family: 'SF Mono', Consolas, monospace; font-size: 0.88em; background: var(--accent-soft); color: var(--accent); padding: 1px 6px; border-radius: 4px; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; padding: 16px 0 64px; }
   .stat { text-align: center; padding: 24px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); }
-  .stat .v { font-family: 'Newsreader', serif; font-size: 32px; font-weight: 500; color: var(--text); }
+  .stat .v { font-family: Georgia, 'Times New Roman', serif; font-size: 32px; font-weight: 500; color: var(--text); }
   .stat .l { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
   .endpoint { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; margin-bottom: 64px; }
-  .endpoint h2 { font-family: 'Newsreader', serif; font-weight: 500; font-size: 24px; margin-bottom: 20px; }
+  .endpoint h2 { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; font-size: 24px; margin-bottom: 20px; }
   .row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px dashed var(--border); }
   .row:last-child { border-bottom: none; }
   .method { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; font-family: 'SF Mono', Consolas, monospace; }
@@ -87,7 +71,7 @@
   footer { padding: 48px 0; border-top: 1px solid var(--border); text-align: center; color: var(--text-muted); font-size: 13px; }
   footer a { color: var(--accent); text-decoration: none; }
   footer a:hover { text-decoration: underline; }
-  .copy { font-family: 'Newsreader', serif; }
+  .copy { font-family: Georgia, 'Times New Roman', serif; }
   .banner {
     position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
     display: flex; align-items: center; justify-content: center; gap: 16px;
@@ -177,6 +161,8 @@
 </div>
 
 <script>
+  // 首帧后再执行非关键逻辑（更新检查），加快可交互时间
+  window.addEventListener('load', () => setTimeout(checkUpdate, 300));
   document.getElementById('dot').classList.remove('ok');
   document.getElementById('status').textContent = '检查中…';
   const base = location.origin;
@@ -255,7 +241,6 @@
 
   poll();
   loadModels();
-  checkUpdate();
   setInterval(tick, 1000);
   setInterval(poll, 5000);
   // 页面不可见时停止所有轮询，避免后台 WebView 持续耗电
