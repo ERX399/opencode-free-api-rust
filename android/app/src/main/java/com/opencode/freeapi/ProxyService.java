@@ -8,12 +8,16 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.util.Log;
-
 import java.io.File;
 import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 public class ProxyService extends Service {
     private static final String TAG = "OCProxy";
@@ -30,6 +34,30 @@ public class ProxyService extends Service {
         createChannel();
         startForegroundCompat();
         startProxy();
+        startKeepAlive();
+        startHealthWatchdog();
+        acquireWakeLock();
+    }
+
+    // PARTIAL_WAKE_LOCK：保持 CPU 运行，防后台深度休眠导致 native 线程停摆。
+    // 前台服务持锁系统不回收，配合电池豁免使用
+    private PowerManager.WakeLock wakeLock;
+    private void acquireWakeLock() {
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ocfa:proxy");
+            wakeLock.setReferenceCounted(false);
+            wakeLock.acquire();
+        } catch (Exception e) {
+            Log.w(TAG, "wake lock failed", e);
+        }
+    }
+
+    private void releaseWakeLock() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        } catch (Exception ignored) {
+        }
     }
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -64,6 +92,8 @@ public class ProxyService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        stopped = true;
+        releaseWakeLock();
         stopProxy();
     }
 
@@ -106,6 +136,67 @@ public class ProxyService extends Service {
         }, "proxy-keepalive");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    // 健康探测守护：后台网络恢复后若 native 假死（worker 卡在阻塞 DNS/连接），
+    // 自动 kill 并重启 native 进程。这是 GKD 式“上层守护下层”的核心。
+    private void startHealthWatchdog() {
+        Thread thread = new Thread(() -> {
+            int failures = 0;
+            while (!stopped) {
+                try {
+                    Thread.sleep(60 * 1000L); // 1 分钟一测
+                    if (stopped) return;
+                    if (!isNetworkAvailable()) { failures = 0; continue; }
+                    if (healthCheck()) {
+                        failures = 0;
+                    } else {
+                        failures++;
+                        Log.w(TAG, "health check failed x" + failures);
+                        if (failures >= 3) { // 连续 3 分钟无响应
+                            Log.w(TAG, "native hung, restarting...");
+                            restartNative();
+                            failures = 0;
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "proxy-health-watchdog");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private boolean isNetworkAvailable() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            NetworkInfo info = cm.getActiveNetworkInfo();
+            return info != null && info.isConnected();
+        } catch (Exception e) {
+            return true; // 无法判断时假定有网，交给健康检查决定
+        }
+    }
+
+    // 本机 /health 探测，2 秒超时
+    private boolean healthCheck() {
+        try {
+            HttpURLConnection conn = (HttpURLConnection)
+                    new URL("http://127.0.0.1:8788/health").openConnection();
+            conn.setConnectTimeout(2000);
+            conn.setReadTimeout(2000);
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            return code == 200;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void restartNative() {
+        stopProxy();
+        stopped = false; // stopProxy 置位后 watchdog 线程会退出，这里复位让服务继续
+        startProxy();
     }
 
     // 看门狗：子进程意外退出时自动拉起
