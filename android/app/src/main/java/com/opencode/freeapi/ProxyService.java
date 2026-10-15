@@ -181,8 +181,11 @@ public class ProxyService extends Service {
     // 本机 /health 探测，2 秒超时
     private boolean healthCheck() {
         try {
+            System.setProperty("http.keepAlive", "false");
             HttpURLConnection conn = (HttpURLConnection)
                     new URL("http://127.0.0.1:8788/health").openConnection();
+            conn.setUseCaches(false);
+            conn.setRequestProperty("Connection", "close");
             conn.setConnectTimeout(2000);
             conn.setReadTimeout(2000);
             int code = conn.getResponseCode();
