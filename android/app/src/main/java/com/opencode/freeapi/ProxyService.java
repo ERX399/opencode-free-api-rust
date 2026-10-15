@@ -137,6 +137,13 @@ public class ProxyService extends Service {
         }
     }
 
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // 用户从最近任务划掉 App：前台服务仍应继续运行（通知保留），
+        // 但某些 ROM 会连带杀进程 —— 由 START_STICKY + watchdog 兜底重启
+        super.onTaskRemoved(rootIntent);
+    }
+
     private void stopProxy() {
         stopped = true;
         if (process != null) {
