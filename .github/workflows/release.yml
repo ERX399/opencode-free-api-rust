@@ -173,6 +173,10 @@ jobs:
           mkdir -p android/app/src/main/assets
           cp target/aarch64-linux-android/release/opencode-free-api \
              android/app/src/main/assets/opencode-free-api
+          # 同步覆盖 jniLibs 里的 so，避免仓库中的旧版 so 被打包（ProxyService 用的是它）
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/opencode-free-api \
+             android/app/src/main/jniLibs/arm64-v8a/libopencode_free_api.so
 
       - name: Build APK
         run: |
