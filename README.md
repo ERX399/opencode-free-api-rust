@@ -55,7 +55,7 @@ AUTH_TOKEN=my-secret \
 | `POST` | `/v1/chat/completions` | 对话补全，支持流式 SSE |
 | `*` | 其他 | 透传上游，失败则切换下一节点 |
 
-`/v1` 前缀的端点同时兼容 `/models`、`/chat/completions` 及 `/api/v1`、`/api/v3`、`/api/paas/v4`、`/v1beta` 等常见别名。`/v1/models` 拉取上游列表并只保留免费模型；上游请求统一使用 `User-Agent: opencode/1.0`，流式请求以 SSE 逐块转发并在失败时切换多节点。`/health` 报告请求数和监听地址信息。
+`/v1` 前缀的端点同时兼容 `/models`、`/chat/completions` 及 `/api/v1`、`/api/v3`、`/api/paas/v4`、`/v1beta` 等常见别名。`/v1/models` 拉取上游列表并只保留免费模型；上游请求使用 `User-Agent: opencode/<version>`，启动时及每 6 小时自动从 npm registry (opencode-ai) 拉取最新版本号适配，失败时回退内置默认值，流式请求以 SSE 逐块转发并在失败时切换多节点。`/health` 报告请求数和监听地址信息。
 
 ## 思考模式（thinking）
 
