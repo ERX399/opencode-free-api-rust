@@ -185,16 +185,16 @@ jobs:
             -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass ocfa-release -keypass ocfa-release \
             -dname "CN=OC Free API, OU=Release, O=OCFA, L=CN, ST=CN, C=CN"
-          cat > android/signing.gradle <<'GEOF'
-android.signingConfigs.create("release") {
-    storeFile = file("/tmp/release.keystore")
-    storePassword = "ocfa-release"
-    keyAlias = "ocfa"
-    keyPassword = "ocfa-release"
-}
-android.buildTypes["release"].signingConfig = android.signingConfigs.getByName("release")
-GEOF
-          grep -q "signing.gradle" android/app/build.gradle || sed -i "s/^plugins {/plugins {/; 1i apply from: \"../signing.gradle\"" android/app/build.gradle
+          printf '%s\n' \
+            'android.signingConfigs.create("release") {' \
+            '    storeFile = file("/tmp/release.keystore")' \
+            '    storePassword = "ocfa-release"' \
+            '    keyAlias = "ocfa"' \
+            '    keyPassword = "ocfa-release"' \
+            '}' \
+            'android.buildTypes["release"].signingConfig = android.signingConfigs.getByName("release")' \
+            > android/signing.gradle
+          grep -q "signing.gradle" android/app/build.gradle || sed -i "1i apply from: \"../signing.gradle\"" android/app/build.gradle
           cd android
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
