@@ -344,8 +344,23 @@ impl App {
         }
         // V2 上游只接受流式。下游请求统一转成 stream:true，非流式请求由本地聚合。
         // 若客户端未提供 tools，注入上游免费层门禁要求的 read 保留工具（schema 必须一致，否则 403）。
-        if payload.get("tools").and_then(Value::as_array).is_none_or(|t| t.is_empty()) {
-            payload["tools"] = json!([gate_tool()]);
+        // 上游门禁只看工具名：tools 里缺 read 就补门禁桩（含 tools 为空与非空两种情况）
+        let has_read = payload
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| {
+                tools.iter().any(|t| {
+                    t.get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str)
+                        == Some("read")
+                })
+            });
+        if !has_read {
+            match payload.get_mut("tools").and_then(Value::as_array_mut) {
+                Some(tools) => tools.push(gate_tool()),
+                None => payload["tools"] = json!([gate_tool()]),
+            }
         }
         if payload.get("tool_choice").is_some_and(|c| c == "none") {
             // V2 拒绝 tool_choice:none，移除后靠保留工具描述约束
