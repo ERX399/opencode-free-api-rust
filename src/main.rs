@@ -32,9 +32,13 @@ use crate::protocol::{
     add_token, client, env_flag, env_or, env_seconds, gate_tool, read_body_response,
     request_header, split_nodes,
 };
+use crate::convert::{
+    anthropic_stream_from_message, anthropic_to_openai, openai_to_anthropic, openai_to_responses,
+    responses_stream_from_response, responses_to_openai,
+};
 use crate::routes::{
-    is_chat_path, is_claude_models_path, is_health_path, is_models_path, normalize_path,
-    route_upstream_path, strip_free_suffix,
+    is_anthropic_messages_path, is_chat_path, is_claude_models_path, is_health_path,
+    is_models_path, is_responses_path, normalize_path, route_upstream_path, strip_free_suffix,
 };
 
 pub type ResponseBox = tiny_http::ResponseBox;
@@ -195,6 +199,12 @@ impl App {
         }
         if method == Method::Post && is_chat_path(path) {
             return self.chat_completions(request);
+        }
+        if method == Method::Post && is_anthropic_messages_path(path) {
+            return self.anthropic_messages(request);
+        }
+        if method == Method::Post && is_responses_path(path) {
+            return self.responses(request);
         }
         if method == Method::Get && path == "/" {
             return self.index_response();
@@ -670,6 +680,185 @@ impl App {
             _ => add_token(agent.get(url), &self.token).call()?,
         };
         Ok(read_body_response(response))
+    }
+}
+
+
+impl App {
+    // Anthropic Messages 协议：转 OpenAI chat 上游，响应转回 Anthropic 格式
+    fn anthropic_messages(&self, request: &mut HttpRequest) -> ResponseBox {
+        let mut body = Vec::new();
+        if request
+            .as_reader()
+            .take(MAX_BODY_BYTES + 1)
+            .read_to_end(&mut body)
+            .is_err()
+            || body.len() as u64 > MAX_BODY_BYTES
+        {
+            return bad_request();
+        }
+        let payload: Value = match serde_json::from_slice(&body) {
+            Ok(payload) => payload,
+            Err(_) => return bad_request(),
+        };
+        let stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
+        let model_hint = payload
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let chat = anthropic_to_openai(&payload);
+        let chat_body = self.remap_chat_body(chat);
+        match self.upstream(
+            "/chat/completions",
+            Method::Post,
+            chat_body,
+            Some("text/event-stream"),
+            true,
+        ) {
+            Ok(response) => {
+                let (parts, sse) = response.into_parts();
+                let status = parts.status.as_u16();
+                if !(200..300).contains(&status) {
+                    return proxy_response(http::Response::from_parts(parts, sse));
+                }
+                match aggregate_sse(&sse, false) {
+                    Ok(aggregated) => {
+                        let message = openai_to_anthropic(&aggregated, &model_hint, false);
+                        if stream {
+                            let sse_text = anthropic_stream_from_message(&message);
+                            let mut headers = vec![
+                                header("Content-Type", "text/event-stream; charset=utf-8"),
+                                header("Cache-Control", "no-cache"),
+                            ];
+                            append_cors(&mut headers);
+                            Response::new(
+                                StatusCode(200),
+                                headers,
+                                Cursor::new(sse_text.into_bytes()),
+                                None,
+                                None,
+                            )
+                            .boxed()
+                        } else {
+                            let mut headers =
+                                vec![header("Content-Type", "application/json; charset=utf-8")];
+                            append_cors(&mut headers);
+                            let len = message.len();
+                            Response::new(
+                                StatusCode(200),
+                                headers,
+                                Cursor::new(message),
+                                Some(len),
+                                None,
+                            )
+                            .boxed()
+                        }
+                    }
+                    Err(message) => error_response(502, "upstream_error", &message),
+                }
+            }
+            Err(error) => {
+                if (400..500).contains(&error.status) && !error.body.is_empty() {
+                    response(
+                        error.status,
+                        error.body,
+                        Some("application/json; charset=utf-8"),
+                        None,
+                    )
+                } else {
+                    error_response(error.status, "upstream_error", &error.message)
+                }
+            }
+        }
+    }
+
+    // OpenAI Responses 协议：转 OpenAI chat 上游，响应转回 Responses 格式
+    fn responses(&self, request: &mut HttpRequest) -> ResponseBox {
+        let mut body = Vec::new();
+        if request
+            .as_reader()
+            .take(MAX_BODY_BYTES + 1)
+            .read_to_end(&mut body)
+            .is_err()
+            || body.len() as u64 > MAX_BODY_BYTES
+        {
+            return bad_request();
+        }
+        let payload: Value = match serde_json::from_slice(&body) {
+            Ok(payload) => payload,
+            Err(_) => return bad_request(),
+        };
+        let stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
+        let model_hint = payload
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let chat = responses_to_openai(&payload);
+        let chat_body = self.remap_chat_body(chat);
+        match self.upstream(
+            "/chat/completions",
+            Method::Post,
+            chat_body,
+            Some("text/event-stream"),
+            true,
+        ) {
+            Ok(response) => {
+                let (parts, sse) = response.into_parts();
+                let status = parts.status.as_u16();
+                if !(200..300).contains(&status) {
+                    return proxy_response(http::Response::from_parts(parts, sse));
+                }
+                match aggregate_sse(&sse, false) {
+                    Ok(aggregated) => {
+                        let output = openai_to_responses(&aggregated, &model_hint);
+                        if stream {
+                            let sse_text = responses_stream_from_response(&output);
+                            let mut headers = vec![
+                                header("Content-Type", "text/event-stream; charset=utf-8"),
+                                header("Cache-Control", "no-cache"),
+                            ];
+                            append_cors(&mut headers);
+                            Response::new(
+                                StatusCode(200),
+                                headers,
+                                Cursor::new(sse_text.into_bytes()),
+                                None,
+                                None,
+                            )
+                            .boxed()
+                        } else {
+                            let mut headers =
+                                vec![header("Content-Type", "application/json; charset=utf-8")];
+                            append_cors(&mut headers);
+                            let len = output.len();
+                            Response::new(
+                                StatusCode(200),
+                                headers,
+                                Cursor::new(output),
+                                Some(len),
+                                None,
+                            )
+                            .boxed()
+                        }
+                    }
+                    Err(message) => error_response(502, "upstream_error", &message),
+                }
+            }
+            Err(error) => {
+                if (400..500).contains(&error.status) && !error.body.is_empty() {
+                    response(
+                        error.status,
+                        error.body,
+                        Some("application/json; charset=utf-8"),
+                        None,
+                    )
+                } else {
+                    error_response(error.status, "upstream_error", &error.message)
+                }
+            }
+        }
     }
 }
 
