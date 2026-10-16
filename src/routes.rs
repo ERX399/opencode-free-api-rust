@@ -84,3 +84,24 @@ pub fn strip_free_suffix(id: &str) -> String {
     }
 }
 
+pub fn is_anthropic_messages_path(path: &str) -> bool {
+    const PATHS: &[&str] = &[
+        "/v1/messages",
+        "/messages",
+        "/api/v1/messages",
+        "/claude/v1/messages",
+        "/anthropic/v1/messages",
+        "/v1beta/messages",
+    ];
+    PATHS.contains(&path)
+}
+
+pub fn is_responses_path(path: &str) -> bool {
+    const PATHS: &[&str] = &[
+        "/v1/responses",
+        "/responses",
+        "/api/v1/responses",
+        "/openai/v1/responses",
+    ];
+    PATHS.contains(&path)
+}
