@@ -118,7 +118,9 @@ pub fn add_token<B>(
     builder
 }
 
-// 上游免费层门禁：请求必须携带内置 read 工具（名字与参数 schema 均需一致），缺 read 一律 403。
+// 上游免费层门禁：请求的 tools 里必须存在一个名为 read 的工具，缺 read 一律 403。
+// 门禁只按名字判定，不校验参数 schema（实测客户端自带的非匹配 read 同样放行）；
+// 这里仍提供完整的官方 schema，以便被真正调用时行为可预期。
 pub fn gate_tool() -> Value {
     serde_json::json!({
         "type": "function",

@@ -343,9 +343,26 @@ impl App {
             }
         }
         // V2 上游只接受流式。下游请求统一转成 stream:true，非流式请求由本地聚合。
-        // 若客户端未提供 tools，注入上游免费层门禁要求的 read 保留工具（schema 必须一致，否则 403）。
-        if payload.get("tools").and_then(Value::as_array).is_none_or(|t| t.is_empty()) {
-            payload["tools"] = json!([gate_tool()]);
+        // 上游免费层门禁按名字判定：tools 里只要没有名为 read 的工具就 403，
+        // 与客户端是否携带工具、read 的 schema 是否匹配无关（实测非匹配 schema 同样 200）。
+        // 因此判据是「没有 read 就补一个」，而非「tools 为空才注入」，否则自带工具集
+        // 但工具名不含 read 的客户端（如 CodeBuddy）会被漏掉而必然 403。
+        let has_gate_read = payload
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| {
+                tools.iter().any(|tool| {
+                    tool.get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        == Some("read")
+                })
+            });
+        if !has_gate_read {
+            match payload.get_mut("tools").and_then(Value::as_array_mut) {
+                Some(tools) => tools.push(gate_tool()),
+                None => payload["tools"] = json!([gate_tool()]),
+            }
         }
         if payload.get("tool_choice").is_some_and(|c| c == "none") {
             // V2 拒绝 tool_choice:none，移除后靠保留工具描述约束
@@ -940,6 +957,100 @@ mod tests {
         }));
         let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
         assert_eq!(parsed["reasoning_effort"], json!("low"));
+    }
+
+    fn remap_gate_read_names(tools: &Value) -> Vec<String> {
+        tools
+            .as_array()
+            .expect("tools should be an array")
+            .iter()
+            .filter_map(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    // 门禁只认「tools 里有没有名为 read 的工具」，与 schema 无关（见 issue #1）。
+    #[test]
+    fn remap_injects_gate_read_when_tools_absent() {
+        let app = app_for_test();
+        let body = app.remap_chat_body(json!({
+            "model": "some-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true
+        }));
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(
+            remap_gate_read_names(&parsed["tools"]),
+            vec!["read".to_owned()],
+            "missing tools should still be primed with the gate read tool"
+        );
+    }
+
+    #[test]
+    fn remap_injects_gate_read_when_client_tools_lack_read() {
+        let app = app_for_test();
+        let body = app.remap_chat_body(json!({
+            "model": "some-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+            "tools": [
+                {"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}},
+                {"type": "function", "function": {"name": "edit", "parameters": {"type": "object"}}}
+            ]
+        }));
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(
+            remap_gate_read_names(&parsed["tools"]),
+            vec!["bash".to_owned(), "edit".to_owned(), "read".to_owned()],
+            "client tools without read must get an appended gate read, preserving client tools"
+        );
+    }
+
+    #[test]
+    fn remap_keeps_client_read_without_duplicating_gate() {
+        let app = app_for_test();
+        let body = app.remap_chat_body(json!({
+            "model": "some-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+            "tools": [
+                {"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}},
+                {"type": "function", "function": {"name": "read", "parameters": {"type": "object", "properties": {"whatever": {"type": "number"}}}}}
+            ]
+        }));
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        let names = remap_gate_read_names(&parsed["tools"]);
+        assert_eq!(
+            names,
+            vec!["bash".to_owned(), "read".to_owned()],
+            "an existing client read must not be duplicated"
+        );
+        // 保留客户端原始 read，其非匹配 schema 同样满足门禁。
+        assert_eq!(
+            parsed["tools"][1]["function"]["parameters"]["properties"]["whatever"],
+            json!({"type": "number"})
+        );
+    }
+
+    #[test]
+    fn remap_injects_gate_read_for_empty_tools_array() {
+        let app = app_for_test();
+        let body = app.remap_chat_body(json!({
+            "model": "some-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+            "tools": []
+        }));
+        let parsed: Value = serde_json::from_slice(&body).expect("valid json out");
+        assert_eq!(
+            remap_gate_read_names(&parsed["tools"]),
+            vec!["read".to_owned()],
+            "empty tools array should get the gate read tool"
+        );
     }
 
     #[test]
