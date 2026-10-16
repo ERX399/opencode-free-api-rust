@@ -1,6 +1,6 @@
 [package]
 name = "opencode-free-api"
-version = "0.3.1-fix"
+version = "0.3.1-fix1"
 edition = "2024"
 license = "MIT"
 description = "Small OpenAI-compatible failover proxy for free models"
