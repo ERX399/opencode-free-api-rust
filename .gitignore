@@ -12,3 +12,5 @@
 /android/local.properties
 /android/.idea
 android/app/src/main/jniLibs/
+opencode-free-api-linux-arm64
+opencode-free-api-win64.exe
