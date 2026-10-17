@@ -1,5 +1,6 @@
 // OpenCode V2 上游协议：会话 ID、请求头、门禁工具、节点故障转移。
 use std::{
+    collections::HashMap,
     env,
     io::Read,
     sync::Mutex,
@@ -18,6 +19,47 @@ pub struct UpstreamError {
     pub status: u16,
     pub message: String,
     pub body: Vec<u8>,
+    pub retry_after: Option<String>,
+    pub node: Option<String>,
+}
+
+// 节点限流冷却表：记录每个上游节点在哪个时间戳前应跳过（unix 毫秒）。
+pub static NODE_COOLDOWN: std::sync::LazyLock<Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+
+pub fn node_cooldown_until(node: &str) -> Option<u64> {
+    NODE_COOLDOWN
+        .lock()
+        .expect("cooldown lock")
+        .get(node)
+        .copied()
+}
+
+pub fn set_node_cooldown(node: &str, until_ms: u64) {
+    NODE_COOLDOWN
+        .lock()
+        .expect("cooldown lock")
+        .insert(node.to_owned(), until_ms);
+}
+
+pub fn clear_node_cooldown(node: &str) {
+    NODE_COOLDOWN
+        .lock()
+        .expect("cooldown lock")
+        .remove(node);
+}
+
+// 解析上游 Retry-After 头（秒数或 HTTP 日期），返回 unix 毫秒到期时间。
+pub fn parse_retry_after(value: &str) -> Option<u64> {
+    if let Ok(seconds) = value.trim().parse::<u64>() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        return Some(now + seconds.saturating_mul(1000));
+    }
+    None
 }
 
 pub const MAX_BODY_BYTES: u64 = 64 << 20;

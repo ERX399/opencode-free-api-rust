@@ -32,7 +32,21 @@ pub fn response(
     content_type: Option<&str>,
     cache_control: Option<&str>,
 ) -> ResponseBox {
+    response_with_retry_after(status, body, content_type, cache_control, None)
+}
+
+// 同 response，可附带 Retry-After 头（上游限流时透传给客户端）。
+pub fn response_with_retry_after(
+    status: u16,
+    body: Vec<u8>,
+    content_type: Option<&str>,
+    cache_control: Option<&str>,
+    retry_after: Option<&str>,
+) -> ResponseBox {
     let mut headers = Vec::with_capacity(4);
+    if let Some(value) = retry_after {
+        headers.push(header("Retry-After", value));
+    }
     if let Some(value) = content_type {
         headers.push(header("Content-Type", value));
     }
