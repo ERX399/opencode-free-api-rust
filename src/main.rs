@@ -22,14 +22,15 @@ mod keepalive;
 mod protocol;
 mod routes;
 
-use crate::convert::{
+use crate::convert::{response_with_retry_after, 
     aggregate_sse, append_cors, bad_request, cors_response, error_response, header,
     is_stream_request, json_response, response, thinking_mode, transform_stream_body,
 };
 use crate::keepalive::{primary_ip, public_ip, spawn_session_keepalive, unix_now};
 use crate::protocol::{
     MAX_BODY_BYTES, UpstreamError, UpstreamResponse, add_headers, add_v2_session_headers,
-    add_token, client, env_flag, env_or, env_seconds, gate_tool, read_body_response,
+    add_token, clear_node_cooldown, client, env_flag, env_or, env_seconds, gate_tool,
+    node_cooldown_until, parse_retry_after, read_body_response, set_node_cooldown,
     request_header, split_nodes,
 };
 use crate::convert::{
@@ -287,11 +288,12 @@ impl App {
             }
             Err(error) => {
                 if (400..500).contains(&error.status) && !error.body.is_empty() {
-                    response(
+                    response_with_retry_after(
                         error.status,
                         error.body,
                         Some("application/json; charset=utf-8"),
                         None,
+                        error.retry_after.as_deref(),
                     )
                 } else {
                     error_response(error.status, "upstream_error", &error.message)
@@ -400,11 +402,12 @@ impl App {
             }
             Err(error) => {
                 if (400..500).contains(&error.status) && !error.body.is_empty() {
-                    response(
+                    response_with_retry_after(
                         error.status,
                         error.body,
                         Some("text/event-stream; charset=utf-8"),
                         None,
+                        error.retry_after.as_deref(),
                     )
                 } else {
                     error_response(error.status, "upstream_error", &error.message)
@@ -535,6 +538,8 @@ impl App {
                 status: 502,
                 message: "no upstream nodes configured".to_string(),
                 body: Vec::new(),
+                retry_after: None,
+                node: None,
             });
         }
         let agent = if stream {
@@ -543,7 +548,16 @@ impl App {
             &self.client
         };
         let mut failures = Vec::with_capacity(self.nodes.len());
+        let now_ms = unix_now();
         for node in &self.nodes {
+            if let Some(until) = node_cooldown_until(node) {
+                if now_ms < until {
+                    eprintln!("跳过冷却中的节点 {node}（剩余 {} 秒）", (until - now_ms) / 1000);
+                    failures.push(format!("{node}: cooling down"));
+                    continue;
+                }
+                clear_node_cooldown(node);
+            }
             let url = format!("{node}{path}");
             let outcome = match method {
                 Method::Post => {
@@ -573,6 +587,20 @@ impl App {
                 Ok(response) => {
                     if !response.status().is_success() {
                         let status = response.status();
+                        let retry_after = response
+                            .headers()
+                            .get("Retry-After")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_owned);
+                        // 上游限流：把该节点冷却到 Retry-After 指定时间
+                        if status.as_u16() == 429 {
+                            if let Some(value) = &retry_after {
+                                if let Some(until) = parse_retry_after(value) {
+                                    set_node_cooldown(node, until);
+                                    eprintln!("节点 {node} 触发限流，冷却至 {value} 秒后");
+                                }
+                            }
+                        }
                         let body_bytes = response.into_body();
                         let body_str = String::from_utf8_lossy(&body_bytes).trim().to_owned();
                         let message = if body_str.is_empty() {
@@ -586,6 +614,8 @@ impl App {
                                 status: status.as_u16(),
                                 message,
                                 body: body_bytes,
+                                retry_after,
+                                node: Some(node.clone()),
                             });
                         }
                         failures.push(message);
@@ -606,6 +636,8 @@ impl App {
             status: 502,
             message: failures.join("; "),
             body: Vec::new(),
+            retry_after: None,
+            node: None,
         })
     }
 
@@ -760,11 +792,12 @@ impl App {
             }
             Err(error) => {
                 if (400..500).contains(&error.status) && !error.body.is_empty() {
-                    response(
+                    response_with_retry_after(
                         error.status,
                         error.body,
                         Some("application/json; charset=utf-8"),
                         None,
+                        error.retry_after.as_deref(),
                     )
                 } else {
                     error_response(error.status, "upstream_error", &error.message)
@@ -848,11 +881,12 @@ impl App {
             }
             Err(error) => {
                 if (400..500).contains(&error.status) && !error.body.is_empty() {
-                    response(
+                    response_with_retry_after(
                         error.status,
                         error.body,
                         Some("application/json; charset=utf-8"),
                         None,
+                        error.retry_after.as_deref(),
                     )
                 } else {
                     error_response(error.status, "upstream_error", &error.message)
