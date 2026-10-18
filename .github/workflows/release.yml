@@ -184,11 +184,16 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION_CODE=$(echo "$VERSION" | awk -F. '{printf "%d%02d%02d", $1, $2, $3}' | sed 's/^0*//'); [ -z "$VERSION_CODE" ] && VERSION_CODE=1
           sed -i "s/versionCode .*/versionCode ${VERSION_CODE:-1}/; s/versionName .*/versionName \"${VERSION:-0.0.0}\"/" android/app/build.gradle
-          # 生成临时签名密钥并配置 release 签名（密钥仅存在于本次构建，不上传）
-          keytool -genkeypair -v -keystore /tmp/release.keystore -alias ocfa \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass ocfa-release -keypass ocfa-release \
-            -dname "CN=OC Free API, OU=Release, O=OCFA, L=CN, ST=CN, C=CN"
+          # 固定签名密钥（来自 repo secret RELEASE_KEYSTORE_BASE64），保证每次构建签名一致；
+          # secret 缺失时回退临时密钥（仅首次迁移期使用）
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
+          else
+            keytool -genkeypair -v -keystore /tmp/release.keystore -alias ocfa \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass ocfa-release -keypass ocfa-release \
+              -dname "CN=OC Free API, OU=Release, O=OCFA, L=CN, ST=CN, C=CN"
+          fi
           printf '%s\n' \
             'android.signingConfigs.create("release") {' \
             '    storeFile = file("/tmp/release.keystore")' \
@@ -204,6 +209,7 @@ jobs:
           ./gradlew assembleRelease --no-daemon
         env:
           ANDROID_HOME: $ANDROID_SDK_ROOT
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
 
       - name: Upload APK to release
         env:
