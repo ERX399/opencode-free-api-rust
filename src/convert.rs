@@ -301,9 +301,13 @@ pub fn stream_chunk_identity(text: &str) -> Option<Value> {
 }
 
 pub fn fallback_reasoning_chunk(text: &str) -> String {
+    fallback_reasoning_chunk_from(stream_chunk_identity(text).as_ref())
+}
+
+pub fn fallback_reasoning_chunk_from(identity: Option<&Value>) -> String {
     let mut chunk = json!({ "choices": [{ "index": 0, "delta": { "reasoning_content": "" } }] });
-    if let Some(object) = chunk.as_object_mut() {
-        if let Some(identity) = stream_chunk_identity(text) {
+    if let Some(identity) = identity {
+        if let Some(object) = chunk.as_object_mut() {
             for key in ["id", "object", "created", "model"] {
                 if let Some(value) = identity.get(key) {
                     object.insert(key.to_owned(), value.clone());

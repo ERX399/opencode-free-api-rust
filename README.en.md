@@ -35,6 +35,9 @@ The console prints three addresses on startup (loopback / LAN / public). Point a
 | `STRIP_FREE` | off | Strip the `-free` suffix from model IDs in `/v1/models` and map calls back to the real ID |
 | `UPSTREAM_TIMEOUT` | `90` | Non-streaming upstream request timeout (seconds) |
 | `STREAM_TIMEOUT` | `1800` | Streaming upstream request timeout (seconds) |
+| `STREAM_LIVE` | on | Forward upstream SSE chunk-by-chunk when `stream: true`; set to off to fall back to buffered aggregation |
+| `STREAM_HEARTBEAT` | `15` | Streaming idle heartbeat interval (seconds), sent as an SSE comment line |
+| `STREAM_IDLE_TIMEOUT` | `300` | Streaming idle timeout (seconds); the stream is aborted once the upstream goes silent this long |
 | `CONNECT_TIMEOUT` | `10` | Upstream TCP/TLS connect timeout (seconds) |
 | `WORKERS` | CPU cores | Concurrent request worker threads |
 
@@ -53,9 +56,24 @@ AUTH_TOKEN=my-secret \
 | `GET` | `/v1/models` | Free model list — only `*-free` models from the upstream |
 | `GET` | `/claude/v1/models` `/anthropic/v1/models` | Claude-compatible model list |
 | `POST` | `/v1/chat/completions` | Chat completions, streaming SSE supported |
+| `POST` | `/v1/messages` `/claude/v1/messages` `/anthropic/v1/messages` | Anthropic Messages protocol, streaming event stream supported |
+| `POST` | `/v1/responses` `/openai/v1/responses` | OpenAI Responses protocol, streaming event stream supported |
 | `*` | anything else | Transparently forwarded upstream; failure triggers failover to the next node |
 
-`/v1`-prefixed endpoints also accept `/models`, `/chat/completions` and common aliases like `/api/v1`, `/api/v3`, `/api/paas/v4`, `/v1beta`. `/v1/models` fetches the upstream list and keeps only free models; upstream requests use `User-Agent: opencode/<version>` (auto-fetched from the npm registry opencode-ai package at startup and every 6h, falling back to the compiled-in default on failure), streaming requests are forwarded chunk-by-chunk as SSE and fail over to the next node on errors. `/health` reports request count and listen address information.
+`/v1`-prefixed endpoints also accept `/models`, `/chat/completions` and common aliases like `/api/v1`, `/api/v3`, `/api/paas/v4`, `/v1beta`. `/v1/models` fetches the upstream list and keeps only free models; upstream requests use the fixed V2 three-segment `User-Agent: opencode/latest/2.0.32/cli` (tracking the npm package `@opencode/cli`, synced by hand when needed), streaming requests are forwarded chunk-by-chunk as SSE and fail over to the next node on errors. `/health` reports request count and listen address information.
+
+## Streaming
+
+With `stream: true` on `POST /v1/chat/completions`, the upstream SSE is forwarded chunk-by-chunk — every chunk the upstream produces is flushed to the client immediately instead of waiting for the whole response. `POST /v1/messages` (Anthropic protocol) streams incrementally too: each upstream OpenAI delta is translated on the fly into the `message_start` / `content_block_start` / `content_block_delta` / `content_block_stop` / `message_delta` / `message_stop` event stream, with tool calls forwarded as `tool_use` blocks plus `input_json_delta` fragments. `POST /v1/responses` (Responses protocol) emits `response.created` → a series of `response.output_text.delta` → `response.completed`:
+
+- Failover happens before the first byte is written; the node is never switched after that
+- When the upstream goes quiet for `STREAM_HEARTBEAT` seconds a keepalive is sent (`event: ping` on the Anthropic path, an `: keepalive` comment line on the OpenAI and Responses paths); after `STREAM_IDLE_TIMEOUT` seconds of silence the stream is aborted
+- On abort the OpenAI path ends with `data: [DONE]`, while the Anthropic and Responses paths emit `event: error` and no longer send `message_stop` / `response.completed`
+- If the abort happens before any content was sent, an error frame is emitted first
+- HTTP/1.0 clients cannot use chunked framing and fall back to a buffered response
+- The thinking-mode `reasoning_content` fallback is decided per chunk, matching the buffered path
+- The Anthropic path matches the buffered path: `stop_reason` is `tool_use` when a tool call appeared and `end_turn` otherwise, empty content yields a single empty `text` block, and no `thinking` block is emitted
+- The Responses path matches the buffered path: `resp_`-prefixed id, fully accumulated `output_text`, and the complete `usage` in `response.completed`; `tool_calls` and thinking content are ignored as before
 
 ## Thinking mode
 

@@ -213,6 +213,10 @@ pub fn env_or(name: &str, fallback: &str) -> String {
 }
 
 pub fn env_flag(name: &str) -> bool {
+    env_flag_or(name, false)
+}
+
+pub fn env_flag_or(name: &str, fallback: bool) -> bool {
     env::var(name)
         .map(|value| {
             matches!(
@@ -220,7 +224,7 @@ pub fn env_flag(name: &str) -> bool {
                 "1" | "true" | "yes" | "on"
             )
         })
-        .unwrap_or(false)
+        .unwrap_or(fallback)
 }
 
 pub fn env_seconds(name: &str, fallback: u64) -> Duration {

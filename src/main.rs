@@ -7,20 +7,21 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
-        mpsc,
+        mpsc::{self, RecvTimeoutError},
     },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Value, json};
-use tiny_http::{Method, Request as HttpRequest, Response, Server, StatusCode};
+use tiny_http::{HTTPVersion, Method, Request as HttpRequest, Response, Server, StatusCode};
 use ureq::Agent;
 
 mod convert;
 mod keepalive;
 mod protocol;
 mod routes;
+mod stream;
 mod update;
 
 use crate::convert::{response_with_retry_after, 
@@ -30,10 +31,11 @@ use crate::convert::{response_with_retry_after,
 use crate::keepalive::{primary_ip, public_ip, spawn_session_keepalive, unix_now};
 use crate::protocol::{
     MAX_BODY_BYTES, UpstreamError, UpstreamResponse, add_headers, add_v2_session_headers,
-    add_token, clear_node_cooldown, client, env_flag, env_or, env_seconds, gate_tool,
-    node_cooldown_until, parse_retry_after, read_body_response, set_node_cooldown,
+    add_token, clear_node_cooldown, client, env_flag, env_flag_or, env_or, env_seconds, gate_tool,
+    node_cooldown_until, parse_retry_after, read_body, read_body_response, set_node_cooldown,
     request_header, split_nodes,
 };
+use crate::stream::{AnthropicSink, ChatSink, ChunkedWriter, LiveSink, ResponsesSink};
 use crate::convert::{
     anthropic_stream_from_message, anthropic_to_openai, openai_to_anthropic, openai_to_responses,
     responses_stream_from_response, responses_to_openai,
@@ -54,6 +56,9 @@ pub struct App {
     pub token: Option<String>,
     pub auth_token: Option<String>,
     pub strip_free: bool,
+    pub stream_live: bool,
+    pub stream_heartbeat: Duration,
+    pub stream_idle: Duration,
     pub free_map: Arc<Mutex<FreeMap>>,
     pub client: Agent,
     pub stream_client: Agent,
@@ -62,6 +67,34 @@ pub struct App {
     pub local_ip: String,
     pub public_ip: Option<String>,
     pub started: u64,
+}
+
+enum Reply {
+    Body(ResponseBox),
+    Chat(ChatStream),
+    Anthropic(AnthropicStream),
+    Responses(ResponsesStream),
+}
+
+struct ChatStream {
+    body: Vec<u8>,
+    accept: Option<String>,
+    thinking: bool,
+}
+
+struct AnthropicStream {
+    body: Vec<u8>,
+    model_hint: String,
+}
+
+struct ResponsesStream {
+    body: Vec<u8>,
+    model_hint: String,
+}
+
+enum Feed {
+    Data(Vec<u8>),
+    Error(String),
 }
 
 pub struct FreeMap {
@@ -95,6 +128,9 @@ impl App {
                 .ok()
                 .filter(|value| !value.is_empty()),
             strip_free: env_flag("STRIP_FREE"),
+            stream_live: env_flag_or("STREAM_LIVE", true),
+            stream_heartbeat: env_seconds("STREAM_HEARTBEAT", 15),
+            stream_idle: env_seconds("STREAM_IDLE_TIMEOUT", 300),
             free_map: Arc::new(Mutex::new(FreeMap::new())),
             client: client(env_seconds("UPSTREAM_TIMEOUT", 90), connect_timeout),
             stream_client: client(env_seconds("STREAM_TIMEOUT", 1800), connect_timeout),
@@ -155,9 +191,15 @@ fn main() {
         let rx = Arc::clone(&rx);
         let app = app.clone();
         thread::spawn(move || {
-            while let Ok(mut request) = rx.lock().expect("request queue lock").recv() {
-                let response = app.handle(&mut request);
-                let _ = request.respond(response);
+            loop {
+                let request = {
+                    let guard = rx.lock().expect("request queue lock");
+                    match guard.recv() {
+                        Ok(request) => request,
+                        Err(_) => break,
+                    }
+                };
+                app.handle(request);
             }
         });
     }
@@ -167,17 +209,28 @@ fn main() {
 }
 
 impl App {
-    fn handle(&self, request: &mut HttpRequest) -> ResponseBox {
+    fn handle(&self, mut request: HttpRequest) {
+        match self.dispatch(&mut request) {
+            Reply::Body(response) => {
+                let _ = request.respond(response);
+            }
+            Reply::Chat(plan) => self.chat_stream_live(request, plan),
+            Reply::Anthropic(plan) => self.anthropic_stream_live(request, plan),
+            Reply::Responses(plan) => self.responses_stream_live(request, plan),
+        }
+    }
+
+    fn dispatch(&self, request: &mut HttpRequest) -> Reply {
         let method = request.method().clone();
         let full_path = request.url().to_owned();
         let raw_path = full_path.split('?').next().unwrap_or(&full_path);
         let path = normalize_path(raw_path);
 
         if method == Method::Options {
-            return cors_response(204, Vec::new());
+            return Reply::Body(cors_response(204, Vec::new()));
         }
         if method == Method::Get && is_health_path(path) {
-            return json_response(
+            return Reply::Body(json_response(
                 200,
                 json!({
                     "status": "ok",
@@ -190,17 +243,21 @@ impl App {
                     "version": VERSION,
                     "latest_version": update::latest_tag(),
                 }),
-            );
+            ));
         }
         if self.auth_token.is_some() && !self.authorized(request) {
-            return error_response(401, "invalid_api_key", "missing or invalid bearer token");
+            return Reply::Body(error_response(
+                401,
+                "invalid_api_key",
+                "missing or invalid bearer token",
+            ));
         }
         self.requests.fetch_add(1, Ordering::Relaxed);
         if method == Method::Get && is_models_path(path) {
-            return self.models(request);
+            return Reply::Body(self.models(request));
         }
         if method == Method::Get && is_claude_models_path(path) {
-            return self.claude_models();
+            return Reply::Body(self.claude_models());
         }
         if method == Method::Post && is_chat_path(path) {
             return self.chat_completions(request);
@@ -212,9 +269,9 @@ impl App {
             return self.responses(request);
         }
         if method == Method::Get && path == "/" {
-            return self.index_response();
+            return Reply::Body(self.index_response());
         }
-        self.forward(request, &method, &full_path)
+        Reply::Body(self.forward(request, &method, &full_path))
     }
 
     fn authorized(&self, request: &HttpRequest) -> bool {
@@ -244,7 +301,7 @@ impl App {
         json_response(200, json!({"data": models}))
     }
 
-    fn chat_completions(&self, request: &mut HttpRequest) -> ResponseBox {
+    fn chat_completions(&self, request: &mut HttpRequest) -> Reply {
         let mut body = Vec::new();
         if request
             .as_reader()
@@ -253,18 +310,35 @@ impl App {
             .is_err()
             || body.len() as u64 > MAX_BODY_BYTES
         {
-            return bad_request();
+            return Reply::Body(bad_request());
         }
         let payload: Value = match serde_json::from_slice(&body) {
             Ok(payload) => payload,
-            Err(_) => return bad_request(),
+            Err(_) => return Reply::Body(bad_request()),
         };
         let stream = is_stream_request(&payload);
         let thinking = thinking_mode(&payload);
         let body = self.remap_chat_body(payload);
         let accept = request_header(request, "Accept");
+        if stream && self.stream_live {
+            return Reply::Chat(ChatStream {
+                body,
+                accept,
+                thinking,
+            });
+        }
+        Reply::Body(self.chat_reply(body, accept.as_deref(), thinking, stream))
+    }
+
+    fn chat_reply(
+        &self,
+        body: Vec<u8>,
+        accept: Option<&str>,
+        thinking: bool,
+        stream: bool,
+    ) -> ResponseBox {
         if stream {
-            return self.chat_stream(body, accept.as_deref(), thinking);
+            return self.chat_stream(body, accept, thinking);
         }
         match self.upstream(
             "/chat/completions",
@@ -420,6 +494,112 @@ impl App {
         }
     }
 
+    fn chat_stream_live(&self, request: HttpRequest, plan: ChatStream) {
+        let http11 = *request.http_version() == HTTPVersion(1, 1);
+        match self.upstream_raw(
+            "/chat/completions",
+            Method::Post,
+            plan.body,
+            plan.accept.as_deref(),
+            true,
+        ) {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if !http11 || !(200..300).contains(&status) {
+                    let mut body = read_body(response.into_body());
+                    if plan.thinking && (200..300).contains(&status) {
+                        transform_stream_body(&mut body);
+                    }
+                    let mut headers = vec![
+                        header("Content-Type", "text/event-stream; charset=utf-8"),
+                        header("Cache-Control", "no-cache"),
+                    ];
+                    append_cors(&mut headers);
+                    let len = body.len();
+                    let fallback = Response::new(
+                        StatusCode(status),
+                        headers,
+                        Cursor::new(body),
+                        Some(len),
+                        None,
+                    )
+                    .boxed();
+                    let _ = request.respond(fallback);
+                    return;
+                }
+                let writer = match ChunkedWriter::new(request.into_writer(), status) {
+                    Ok(writer) => writer,
+                    Err(_) => return,
+                };
+                let reader = response.into_body().into_reader();
+                let (sender, receiver) = mpsc::sync_channel::<Feed>(64);
+                thread::spawn(move || feed_upstream(reader, sender));
+                self.pump_live(writer, &receiver, ChatSink::new(plan.thinking));
+            }
+            Err(error) => {
+                let response = if (400..500).contains(&error.status) && !error.body.is_empty() {
+                    response_with_retry_after(
+                        error.status,
+                        error.body,
+                        Some("text/event-stream; charset=utf-8"),
+                        None,
+                        error.retry_after.as_deref(),
+                    )
+                } else {
+                    error_response(error.status, "upstream_error", &error.message)
+                };
+                let _ = request.respond(response);
+            }
+        }
+    }
+
+    fn pump_live<S: LiveSink>(
+        &self,
+        mut writer: ChunkedWriter,
+        receiver: &mpsc::Receiver<Feed>,
+        mut sink: S,
+    ) {
+        let heartbeat = self.stream_heartbeat.max(Duration::from_secs(1));
+        let idle_limit = self.stream_idle.max(heartbeat);
+        let mut idle = Duration::ZERO;
+        let mut failure: Option<String> = None;
+        loop {
+            match receiver.recv_timeout(heartbeat) {
+                Ok(Feed::Data(bytes)) => {
+                    idle = Duration::ZERO;
+                    let output = sink.feed(bytes);
+                    if writer.write_bytes(&output).is_err() {
+                        return;
+                    }
+                }
+                Ok(Feed::Error(message)) => {
+                    failure = Some(message);
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    let output = sink.heartbeat();
+                    if writer.write_bytes(&output).is_err() {
+                        return;
+                    }
+                    idle += heartbeat;
+                    if idle >= idle_limit {
+                        failure = Some(format!("上游静默 {} 秒", idle.as_secs()));
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        if let Some(message) = &failure {
+            eprintln!("流式转发中断：{message}");
+        }
+        let output = sink.shutdown(failure.as_deref());
+        if !output.is_empty() && writer.write_bytes(&output).is_err() {
+            return;
+        }
+        let _ = writer.finish();
+    }
+
     fn index_response(&self) -> ResponseBox {
         let public = self.public_ip.as_deref().unwrap_or("无法获取公网 IP");
         let html = INDEX_HTML
@@ -537,6 +717,18 @@ impl App {
         accept: Option<&str>,
         stream: bool,
     ) -> Result<UpstreamResponse, UpstreamError> {
+        self.upstream_raw(path, method, body, accept, stream)
+            .map(read_body_response)
+    }
+
+    fn upstream_raw(
+        &self,
+        path: &str,
+        method: Method,
+        body: Vec<u8>,
+        accept: Option<&str>,
+        stream: bool,
+    ) -> Result<http::Response<ureq::Body>, UpstreamError> {
         if self.nodes.is_empty() {
             return Err(UpstreamError {
                 status: 502,
@@ -574,7 +766,6 @@ impl App {
                     builder
                         .header("Content-Type", "application/json")
                         .send(&body)
-                        .map(read_body_response)
                 }
                 Method::Get => {
                     let builder = add_headers(agent.get(&url), accept, &self.token);
@@ -583,7 +774,7 @@ impl App {
                     } else {
                         builder
                     };
-                    builder.call().map(read_body_response)
+                    builder.call()
                 }
                 _ => continue,
             };
@@ -605,7 +796,7 @@ impl App {
                                 }
                             }
                         }
-                        let body_bytes = response.into_body();
+                        let body_bytes = read_body(response.into_body());
                         let body_str = String::from_utf8_lossy(&body_bytes).trim().to_owned();
                         let message = if body_str.is_empty() {
                             format!("{node}: HTTP {status}")
@@ -722,7 +913,7 @@ impl App {
 
 impl App {
     // Anthropic Messages 协议：转 OpenAI chat 上游，响应转回 Anthropic 格式
-    fn anthropic_messages(&self, request: &mut HttpRequest) -> ResponseBox {
+    fn anthropic_messages(&self, request: &mut HttpRequest) -> Reply {
         let mut body = Vec::new();
         if request
             .as_reader()
@@ -731,11 +922,11 @@ impl App {
             .is_err()
             || body.len() as u64 > MAX_BODY_BYTES
         {
-            return bad_request();
+            return Reply::Body(bad_request());
         }
         let payload: Value = match serde_json::from_slice(&body) {
             Ok(payload) => payload,
-            Err(_) => return bad_request(),
+            Err(_) => return Reply::Body(bad_request()),
         };
         let stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let model_hint = payload
@@ -743,12 +934,21 @@ impl App {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        let chat = anthropic_to_openai(&payload);
-        let chat_body = self.remap_chat_body(chat);
+        let chat_body = self.remap_chat_body(anthropic_to_openai(&payload));
+        if stream && self.stream_live {
+            return Reply::Anthropic(AnthropicStream {
+                body: chat_body,
+                model_hint,
+            });
+        }
+        Reply::Body(self.anthropic_reply(chat_body, &model_hint, stream))
+    }
+
+    fn anthropic_reply(&self, body: Vec<u8>, model_hint: &str, stream: bool) -> ResponseBox {
         match self.upstream(
             "/chat/completions",
             Method::Post,
-            chat_body,
+            body,
             Some("text/event-stream"),
             true,
         ) {
@@ -758,41 +958,7 @@ impl App {
                 if !(200..300).contains(&status) {
                     return proxy_response(http::Response::from_parts(parts, sse));
                 }
-                match aggregate_sse(&sse, false) {
-                    Ok(aggregated) => {
-                        let message = openai_to_anthropic(&aggregated, &model_hint, false);
-                        if stream {
-                            let sse_text = anthropic_stream_from_message(&message);
-                            let mut headers = vec![
-                                header("Content-Type", "text/event-stream; charset=utf-8"),
-                                header("Cache-Control", "no-cache"),
-                            ];
-                            append_cors(&mut headers);
-                            Response::new(
-                                StatusCode(200),
-                                headers,
-                                Cursor::new(sse_text.into_bytes()),
-                                None,
-                                None,
-                            )
-                            .boxed()
-                        } else {
-                            let mut headers =
-                                vec![header("Content-Type", "application/json; charset=utf-8")];
-                            append_cors(&mut headers);
-                            let len = message.len();
-                            Response::new(
-                                StatusCode(200),
-                                headers,
-                                Cursor::new(message),
-                                Some(len),
-                                None,
-                            )
-                            .boxed()
-                        }
-                    }
-                    Err(message) => error_response(502, "upstream_error", &message),
-                }
+                self.anthropic_from_sse(sse, model_hint, stream)
             }
             Err(error) => {
                 if (400..500).contains(&error.status) && !error.body.is_empty() {
@@ -810,8 +976,93 @@ impl App {
         }
     }
 
+    fn anthropic_from_sse(&self, sse: Vec<u8>, model_hint: &str, stream: bool) -> ResponseBox {
+        match aggregate_sse(&sse, false) {
+            Ok(aggregated) => {
+                let message = openai_to_anthropic(&aggregated, model_hint, false);
+                if stream {
+                    let sse_text = anthropic_stream_from_message(&message);
+                    let mut headers = vec![
+                        header("Content-Type", "text/event-stream; charset=utf-8"),
+                        header("Cache-Control", "no-cache"),
+                    ];
+                    append_cors(&mut headers);
+                    Response::new(
+                        StatusCode(200),
+                        headers,
+                        Cursor::new(sse_text.into_bytes()),
+                        None,
+                        None,
+                    )
+                    .boxed()
+                } else {
+                    let mut headers = vec![header("Content-Type", "application/json; charset=utf-8")];
+                    append_cors(&mut headers);
+                    let len = message.len();
+                    Response::new(
+                        StatusCode(200),
+                        headers,
+                        Cursor::new(message),
+                        Some(len),
+                        None,
+                    )
+                    .boxed()
+                }
+            }
+            Err(message) => error_response(502, "upstream_error", &message),
+        }
+    }
+
+    fn anthropic_stream_live(&self, request: HttpRequest, plan: AnthropicStream) {
+        let http11 = *request.http_version() == HTTPVersion(1, 1);
+        match self.upstream_raw(
+            "/chat/completions",
+            Method::Post,
+            plan.body,
+            Some("text/event-stream"),
+            true,
+        ) {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if !http11 || !(200..300).contains(&status) {
+                    let (parts, sse) = response.into_parts();
+                    let sse = read_body(sse);
+                    let reply = if (200..300).contains(&status) {
+                        self.anthropic_from_sse(sse, &plan.model_hint, true)
+                    } else {
+                        proxy_response(http::Response::from_parts(parts, sse))
+                    };
+                    let _ = request.respond(reply);
+                    return;
+                }
+                let writer = match ChunkedWriter::new(request.into_writer(), status) {
+                    Ok(writer) => writer,
+                    Err(_) => return,
+                };
+                let reader = response.into_body().into_reader();
+                let (sender, receiver) = mpsc::sync_channel::<Feed>(64);
+                thread::spawn(move || feed_upstream(reader, sender));
+                self.pump_live(writer, &receiver, AnthropicSink::new(plan.model_hint));
+            }
+            Err(error) => {
+                let response = if (400..500).contains(&error.status) && !error.body.is_empty() {
+                    response_with_retry_after(
+                        error.status,
+                        error.body,
+                        Some("text/event-stream; charset=utf-8"),
+                        None,
+                        error.retry_after.as_deref(),
+                    )
+                } else {
+                    error_response(error.status, "upstream_error", &error.message)
+                };
+                let _ = request.respond(response);
+            }
+        }
+    }
+
     // OpenAI Responses 协议：转 OpenAI chat 上游，响应转回 Responses 格式
-    fn responses(&self, request: &mut HttpRequest) -> ResponseBox {
+    fn responses(&self, request: &mut HttpRequest) -> Reply {
         let mut body = Vec::new();
         if request
             .as_reader()
@@ -820,11 +1071,11 @@ impl App {
             .is_err()
             || body.len() as u64 > MAX_BODY_BYTES
         {
-            return bad_request();
+            return Reply::Body(bad_request());
         }
         let payload: Value = match serde_json::from_slice(&body) {
             Ok(payload) => payload,
-            Err(_) => return bad_request(),
+            Err(_) => return Reply::Body(bad_request()),
         };
         let stream = payload.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let model_hint = payload
@@ -832,12 +1083,21 @@ impl App {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        let chat = responses_to_openai(&payload);
-        let chat_body = self.remap_chat_body(chat);
+        let chat_body = self.remap_chat_body(responses_to_openai(&payload));
+        if stream && self.stream_live {
+            return Reply::Responses(ResponsesStream {
+                body: chat_body,
+                model_hint,
+            });
+        }
+        Reply::Body(self.responses_reply(chat_body, &model_hint, stream))
+    }
+
+    fn responses_reply(&self, body: Vec<u8>, model_hint: &str, stream: bool) -> ResponseBox {
         match self.upstream(
             "/chat/completions",
             Method::Post,
-            chat_body,
+            body,
             Some("text/event-stream"),
             true,
         ) {
@@ -847,41 +1107,7 @@ impl App {
                 if !(200..300).contains(&status) {
                     return proxy_response(http::Response::from_parts(parts, sse));
                 }
-                match aggregate_sse(&sse, false) {
-                    Ok(aggregated) => {
-                        let output = openai_to_responses(&aggregated, &model_hint);
-                        if stream {
-                            let sse_text = responses_stream_from_response(&output);
-                            let mut headers = vec![
-                                header("Content-Type", "text/event-stream; charset=utf-8"),
-                                header("Cache-Control", "no-cache"),
-                            ];
-                            append_cors(&mut headers);
-                            Response::new(
-                                StatusCode(200),
-                                headers,
-                                Cursor::new(sse_text.into_bytes()),
-                                None,
-                                None,
-                            )
-                            .boxed()
-                        } else {
-                            let mut headers =
-                                vec![header("Content-Type", "application/json; charset=utf-8")];
-                            append_cors(&mut headers);
-                            let len = output.len();
-                            Response::new(
-                                StatusCode(200),
-                                headers,
-                                Cursor::new(output),
-                                Some(len),
-                                None,
-                            )
-                            .boxed()
-                        }
-                    }
-                    Err(message) => error_response(502, "upstream_error", &message),
-                }
+                self.responses_from_sse(sse, model_hint, stream)
             }
             Err(error) => {
                 if (400..500).contains(&error.status) && !error.body.is_empty() {
@@ -895,6 +1121,91 @@ impl App {
                 } else {
                     error_response(error.status, "upstream_error", &error.message)
                 }
+            }
+        }
+    }
+
+    fn responses_from_sse(&self, sse: Vec<u8>, model_hint: &str, stream: bool) -> ResponseBox {
+        match aggregate_sse(&sse, false) {
+            Ok(aggregated) => {
+                let output = openai_to_responses(&aggregated, model_hint);
+                if stream {
+                    let sse_text = responses_stream_from_response(&output);
+                    let mut headers = vec![
+                        header("Content-Type", "text/event-stream; charset=utf-8"),
+                        header("Cache-Control", "no-cache"),
+                    ];
+                    append_cors(&mut headers);
+                    Response::new(
+                        StatusCode(200),
+                        headers,
+                        Cursor::new(sse_text.into_bytes()),
+                        None,
+                        None,
+                    )
+                    .boxed()
+                } else {
+                    let mut headers = vec![header("Content-Type", "application/json; charset=utf-8")];
+                    append_cors(&mut headers);
+                    let len = output.len();
+                    Response::new(
+                        StatusCode(200),
+                        headers,
+                        Cursor::new(output),
+                        Some(len),
+                        None,
+                    )
+                    .boxed()
+                }
+            }
+            Err(message) => error_response(502, "upstream_error", &message),
+        }
+    }
+
+    fn responses_stream_live(&self, request: HttpRequest, plan: ResponsesStream) {
+        let http11 = *request.http_version() == HTTPVersion(1, 1);
+        match self.upstream_raw(
+            "/chat/completions",
+            Method::Post,
+            plan.body,
+            Some("text/event-stream"),
+            true,
+        ) {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if !http11 || !(200..300).contains(&status) {
+                    let (parts, sse) = response.into_parts();
+                    let sse = read_body(sse);
+                    let reply = if (200..300).contains(&status) {
+                        self.responses_from_sse(sse, &plan.model_hint, true)
+                    } else {
+                        proxy_response(http::Response::from_parts(parts, sse))
+                    };
+                    let _ = request.respond(reply);
+                    return;
+                }
+                let writer = match ChunkedWriter::new(request.into_writer(), status) {
+                    Ok(writer) => writer,
+                    Err(_) => return,
+                };
+                let reader = response.into_body().into_reader();
+                let (sender, receiver) = mpsc::sync_channel::<Feed>(64);
+                thread::spawn(move || feed_upstream(reader, sender));
+                self.pump_live(writer, &receiver, ResponsesSink::new(plan.model_hint));
+            }
+            Err(error) => {
+                let response = if (400..500).contains(&error.status) && !error.body.is_empty() {
+                    response_with_retry_after(
+                        error.status,
+                        error.body,
+                        Some("text/event-stream; charset=utf-8"),
+                        None,
+                        error.retry_after.as_deref(),
+                    )
+                } else {
+                    error_response(error.status, "upstream_error", &error.message)
+                };
+                let _ = request.respond(response);
             }
         }
     }
@@ -920,6 +1231,24 @@ fn proxy_response(upstream: UpstreamResponse) -> ResponseBox {
         cache_control.as_deref(),
     )
 }
+fn feed_upstream(mut reader: impl Read + Send + 'static, sender: mpsc::SyncSender<Feed>) {
+    let mut buffer = vec![0u8; 16 * 1024];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                if sender.send(Feed::Data(buffer[..read].to_vec())).is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(Feed::Error(error.to_string()));
+                break;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1006,6 +1335,9 @@ mod tests {
             token: None,
             auth_token: None,
             strip_free: false,
+            stream_live: true,
+            stream_heartbeat: Duration::from_secs(15),
+            stream_idle: Duration::from_secs(300),
             free_map: Arc::new(Mutex::new(FreeMap::new())),
             client: client(Duration::from_secs(15), Duration::from_secs(15)),
             stream_client: client(Duration::from_secs(15), Duration::from_secs(15)),
@@ -1373,9 +1705,15 @@ data: [DONE]"#;
             let rx = Arc::clone(&rx);
             let app = app.clone();
             thread::spawn(move || {
-                while let Ok(mut request) = rx.lock().expect("request queue lock").recv() {
-                    let response = app.handle(&mut request);
-                    let _ = request.respond(response);
+                loop {
+                    let request = {
+                        let guard = rx.lock().expect("request queue lock");
+                        match guard.recv() {
+                            Ok(request) => request,
+                            Err(_) => break,
+                        }
+                    };
+                    app.handle(request);
                 }
             });
         }
