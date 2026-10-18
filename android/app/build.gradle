@@ -34,7 +34,9 @@ android {
             excludes += ['META-INF/**']
         }
         jniLibs {
-            useLegacyPackaging = false
+            // 必须为 true：二进制以可执行文件方式运行（ProcessBuilder），
+            // 依赖系统把 so 解压到 nativeLibraryDir；false 时不解压，启动直接失败
+            useLegacyPackaging = true
         }
     }
 }
