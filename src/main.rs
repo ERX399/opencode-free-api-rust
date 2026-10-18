@@ -21,6 +21,7 @@ mod convert;
 mod keepalive;
 mod protocol;
 mod routes;
+mod update;
 
 use crate::convert::{response_with_retry_after, 
     aggregate_sse, append_cors, bad_request, cors_response, error_response, header,
@@ -110,6 +111,7 @@ fn main() {
     let address = format!("{}:{}", env_or("HOST", "0.0.0.0"), env_or("PORT", "8788"));
     let app = App::from_env();
     spawn_session_keepalive();
+    update::spawn_update_check(VERSION);
     let workers = env::var("WORKERS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -185,6 +187,8 @@ impl App {
                     "local_ip": self.local_ip,
                     "public_ip": self.public_ip,
                     "started": self.started,
+                    "version": VERSION,
+                    "latest_version": update::latest_tag(),
                 }),
             );
         }
