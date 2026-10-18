@@ -135,8 +135,3 @@ linker = "<NDK>/toolchains/llvm/prebuilt/<host>/bin/x86_64-linux-android24-clang
 ```
 
 同样的流程在每次推送 `v*` 标签时由 [`release` 工作流](../../.github/workflows/release.yml) 自动执行，并将压缩包上传到 GitHub Release。
-
-## 贡献者
-
-- [@ThinkReally114](https://github.com/ThinkReally114) — 真流式转发（PR #3）
-- [@lolicin](https://github.com/lolicin) — 门禁 read 工具注入修复（PR #2）
