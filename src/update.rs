@@ -19,9 +19,15 @@ pub fn tag_version(tag: &str) -> Option<String> {
 }
 
 /// 比较两个数字版本号，a > b 返回 true。
+/// 先剥离 pre-release / build 后缀（如 `0.3.3-plus` -> `0.3.3`），避免 `3-plus` 被当成 0 而误判降级。
 pub fn version_gt(a: &str, b: &str) -> bool {
     let parse = |v: &str| -> Vec<u64> {
-        v.split('.')
+        v.trim()
+            .trim_start_matches(['v', 'V'])
+            .split(['-', '+'])
+            .next()
+            .unwrap_or("")
+            .split('.')
             .map(|p| p.parse::<u64>().unwrap_or(0))
             .collect()
     };
@@ -111,4 +117,25 @@ pub fn spawn_update_check(local_version: &'static str) {
 
 pub fn latest_tag() -> Option<String> {
     LATEST_TAG.lock().expect("latest tag lock").clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_suffix_does_not_regress() {
+        // 0.3.3-plus 的数值部分等于 0.3.3，不应被判为低于 0.3.3
+        assert!(!version_gt("0.3.3", "0.3.3-plus"));
+        assert!(version_gt("0.3.4", "0.3.3-plus"));
+        assert!(!version_gt("0.3.3-plus", "0.3.4"));
+    }
+
+    #[test]
+    fn tag_version_strips_suffix() {
+        assert_eq!(tag_version("v0.3.3-plus"), Some("0.3.3".to_owned()));
+        assert_eq!(tag_version("0.3.1-fix1"), Some("0.3.1".to_owned()));
+        assert_eq!(tag_version("v1.2.3"), Some("1.2.3".to_owned()));
+        assert_eq!(tag_version("garbage"), None);
+    }
 }
