@@ -35,6 +35,9 @@ _✨ OpenAI 兼容反代 · 单文件部署 ✨_
 | `STRIP_FREE` | off | 去掉 `/v1/models` 返回 ID 的 `-free` 后缀，调用时映射回真实 ID |
 | `UPSTREAM_TIMEOUT` | `90` | 非流式上游请求超时（秒） |
 | `STREAM_TIMEOUT` | `1800` | 流式上游请求超时（秒） |
+| `STREAM_LIVE` | on | `stream: true` 时逐块转发上游 SSE（真流式）；设为 off 回退为缓冲式聚合 |
+| `STREAM_HEARTBEAT` | `15` | 流式空闲心跳间隔（秒），期间以 SSE 注释行保活 |
+| `STREAM_IDLE_TIMEOUT` | `300` | 流式空闲超时（秒），上游静默超时后中断并收尾 |
 | `CONNECT_TIMEOUT` | `10` | 上游 TCP/TLS 连接超时（秒） |
 | `WORKERS` | CPU 核心数 | 并发工作线程数 |
 
@@ -53,9 +56,24 @@ AUTH_TOKEN=my-secret \
 | `GET` | `/v1/models` | 免费模型列表，仅暴露上游 `*-free` 模型 |
 | `GET` | `/claude/v1/models` `/anthropic/v1/models` | Claude 兼容模型列表 |
 | `POST` | `/v1/chat/completions` | 对话补全，支持流式 SSE |
+| `POST` | `/v1/messages` `/claude/v1/messages` `/anthropic/v1/messages` | Anthropic Messages 协议，支持流式事件流 |
+| `POST` | `/v1/responses` `/openai/v1/responses` | OpenAI Responses 协议，支持流式事件流 |
 | `*` | 其他 | 透传上游，失败则切换下一节点 |
 
-`/v1` 前缀的端点同时兼容 `/models`、`/chat/completions` 及 `/api/v1`、`/api/v3`、`/api/paas/v4`、`/v1beta` 等常见别名。`/v1/models` 拉取上游列表并只保留免费模型；上游请求使用 `User-Agent: opencode/<version>`，启动时及每 6 小时自动从 npm registry (opencode-ai) 拉取最新版本号适配，失败时回退内置默认值，流式请求以 SSE 逐块转发并在失败时切换多节点。`/health` 报告请求数和监听地址信息。
+`/v1` 前缀的端点同时兼容 `/models`、`/chat/completions` 及 `/api/v1`、`/api/v3`、`/api/paas/v4`、`/v1beta` 等常见别名。`/v1/models` 拉取上游列表并只保留免费模型；上游请求使用 V2 三段式固定 `User-Agent: opencode/latest/2.0.32/cli`（跟随 npm 包 `@opencode/cli` 的版本，需要时手动同步），流式请求以 SSE 逐块转发并在失败时切换多节点。`/health` 报告请求数和监听地址信息。
+
+## 流式转发
+
+`POST /v1/chat/completions` 带 `stream: true` 时，上游 SSE 被逐块透传——上游每产出一个块就立即 flush 给客户端，不再等整段响应收完。`POST /v1/messages`（Anthropic 协议）同样逐块下发：上游 OpenAI 增量块实时翻译成 `message_start` / `content_block_start` / `content_block_delta` / `content_block_stop` / `message_delta` / `message_stop` 事件流，工具调用按 `tool_use` 块加 `input_json_delta` 片段转发。`POST /v1/responses`（Responses 协议）则是 `response.created` → 若干 `response.output_text.delta` → `response.completed`：
+
+- 故障转移在写出首字节之前完成；首字节之后不再切换节点
+- 上游静默达到 `STREAM_HEARTBEAT` 秒时下发保活（Anthropic 通道是 `event: ping`，OpenAI 与 Responses 通道是 SSE 注释行 `: keepalive`）；持续静默达到 `STREAM_IDLE_TIMEOUT` 秒则中断转发
+- 中断时 OpenAI 通道补 `data: [DONE]` 收尾，Anthropic 与 Responses 通道补 `event: error` 且不再下发 `message_stop` / `response.completed`
+- 中断发生在尚未下发任何内容时，会先补一个错误帧
+- HTTP/1.0 客户端不支持 chunked 定界，自动回落为缓冲式响应
+- 思考模式的兜底 `reasoning_content` 同样按块决策，语义与缓冲式路径一致
+- Anthropic 通道与缓冲式路径保持一致：`stop_reason` 出现过工具调用即 `tool_use`、否则 `end_turn`；内容为空时补一个空 `text` 块；不下发 `thinking` 块
+- Responses 通道与缓冲式路径保持一致：`id` 为 `resp_` 前缀、`output_text` 完整累积、`usage` 在 `response.completed` 里给全；`tool_calls` 与思考内容按现状忽略
 
 ## 思考模式（thinking）
 
