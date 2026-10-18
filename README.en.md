@@ -35,7 +35,8 @@ The console prints three addresses on startup (loopback / LAN / public). Point a
 | `STRIP_FREE` | off | Strip the `-free` suffix from model IDs in `/v1/models` and map calls back to the real ID |
 | `UPSTREAM_TIMEOUT` | `90` | Non-streaming upstream request timeout (seconds) |
 | `STREAM_TIMEOUT` | `1800` | Streaming upstream request timeout (seconds) |
-| `STREAM_LIVE` | on | Forward upstream SSE chunk-by-chunk when `stream: true`; set to off to fall back to buffered aggregation |
+| `STREAM_LIVE` | on | Forward upstream SSE chunk-by-chunk when `stream: true`; set to off to fall back to buffered aggregation. Toggle at runtime on the homepage "Service Settings" switch; persisted in `KV_PATH` (default `kv.json`) |
+| `KV_PATH` | `kv.json` | Path of the runtime settings KV store (currently holds the `stream_live` switch) |
 | `STREAM_HEARTBEAT` | `15` | Streaming idle heartbeat interval (seconds), sent as an SSE comment line |
 | `STREAM_IDLE_TIMEOUT` | `300` | Streaming idle timeout (seconds); the stream is aborted once the upstream goes silent this long |
 | `CONNECT_TIMEOUT` | `10` | Upstream TCP/TLS connect timeout (seconds) |

@@ -4,11 +4,12 @@ use std::{
     collections::HashMap,
     env,
     io::{Cursor, Read},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError},
-    },
+},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -19,6 +20,7 @@ use ureq::Agent;
 
 mod convert;
 mod keepalive;
+mod kv;
 mod protocol;
 mod routes;
 mod stream;
@@ -56,7 +58,8 @@ pub struct App {
     pub token: Option<String>,
     pub auth_token: Option<String>,
     pub strip_free: bool,
-    pub stream_live: bool,
+    pub stream_live: Arc<AtomicBool>,
+    pub kv: Arc<kv::Kv>,
     pub stream_heartbeat: Duration,
     pub stream_idle: Duration,
     pub free_map: Arc<Mutex<FreeMap>>,
@@ -121,14 +124,27 @@ impl App {
             nodes
         };
         let port = env_or("PORT", "8788");
+        let kv = Arc::new(kv::Kv::open(PathBuf::from(
+            env::var("KV_PATH").unwrap_or_else(|_| "kv.json".to_owned()),
+        )));
+        let stream_live_default = env_flag_or("STREAM_LIVE", true);
+        let stream_live = kv.get_bool("stream_live", stream_live_default);
+        if stream_live != stream_live_default {
+            eprintln!(
+                "[KV] stream_live 从 kv.json 恢复为 {}（环境变量默认值 {}）",
+                stream_live, stream_live_default
+            );
+        }
         App {
             nodes,
+            kv,
+            stream_live: Arc::new(AtomicBool::new(stream_live)),
             token: env::var("API_TOKEN").ok().filter(|value| !value.is_empty()),
             auth_token: env::var("AUTH_TOKEN")
                 .ok()
                 .filter(|value| !value.is_empty()),
             strip_free: env_flag("STRIP_FREE"),
-            stream_live: env_flag_or("STREAM_LIVE", true),
+            
             stream_heartbeat: env_seconds("STREAM_HEARTBEAT", 15),
             stream_idle: env_seconds("STREAM_IDLE_TIMEOUT", 300),
             free_map: Arc::new(Mutex::new(FreeMap::new())),
@@ -242,7 +258,36 @@ impl App {
                     "started": self.started,
                     "version": VERSION,
                     "latest_version": update::latest_tag(),
+                    "stream_live": self.stream_live.load(Ordering::Relaxed),
                 }),
+            ));
+        }
+        if method == Method::Post && path == "/settings/stream" {
+            let mut body = Vec::new();
+            if request
+                .as_reader()
+                .take(MAX_BODY_BYTES + 1)
+                .read_to_end(&mut body)
+                .is_err()
+                || body.len() as u64 > MAX_BODY_BYTES
+            {
+                return Reply::Body(bad_request());
+            }
+            let payload: Value = match serde_json::from_slice(&body) {
+                Ok(v) => v,
+                Err(_) => return Reply::Body(bad_request()),
+            };
+            let enabled = match payload.get("stream_live").and_then(Value::as_bool) {
+                Some(v) => v,
+                None => {
+                    return Reply::Body(bad_request());
+                }
+            };
+            self.stream_live.store(enabled, Ordering::Relaxed);
+            self.kv.set_bool("stream_live", enabled);
+            return Reply::Body(json_response(
+                200,
+                json!({ "stream_live": self.stream_live.load(Ordering::Relaxed) }),
             ));
         }
         if self.auth_token.is_some() && !self.authorized(request) {
@@ -320,7 +365,7 @@ impl App {
         let thinking = thinking_mode(&payload);
         let body = self.remap_chat_body(payload);
         let accept = request_header(request, "Accept");
-        if stream && self.stream_live {
+        if stream && self.stream_live.load(Ordering::Relaxed) {
             return Reply::Chat(ChatStream {
                 body,
                 accept,
@@ -935,7 +980,7 @@ impl App {
             .unwrap_or("")
             .to_owned();
         let chat_body = self.remap_chat_body(anthropic_to_openai(&payload));
-        if stream && self.stream_live {
+        if stream && self.stream_live.load(Ordering::Relaxed) {
             return Reply::Anthropic(AnthropicStream {
                 body: chat_body,
                 model_hint,
@@ -1084,7 +1129,7 @@ impl App {
             .unwrap_or("")
             .to_owned();
         let chat_body = self.remap_chat_body(responses_to_openai(&payload));
-        if stream && self.stream_live {
+        if stream && self.stream_live.load(Ordering::Relaxed) {
             return Reply::Responses(ResponsesStream {
                 body: chat_body,
                 model_hint,
@@ -1335,7 +1380,8 @@ mod tests {
             token: None,
             auth_token: None,
             strip_free: false,
-            stream_live: true,
+            kv: Arc::new(kv::Kv::open(PathBuf::from("/tmp/test-kv-ocfa.json"))),
+            stream_live: Arc::new(AtomicBool::new(true)),
             stream_heartbeat: Duration::from_secs(15),
             stream_idle: Duration::from_secs(300),
             free_map: Arc::new(Mutex::new(FreeMap::new())),

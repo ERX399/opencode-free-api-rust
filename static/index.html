@@ -132,6 +132,21 @@
     <div class="stat"><div class="v" id="s-models">—</div><div class="l">免费模型</div></div>
   </div>
 
+  <div class="endpoint">
+    <h2>服务设置</h2>
+    <div class="row" style="justify-content: space-between;">
+      <span class="path">流式转发（SSE 逐块下发）</span>
+      <span style="display:inline-flex;align-items:center;gap:10px;">
+        <span class="desc" id="stream-state">读取中…</span>
+        <label style="position:relative;display:inline-block;width:44px;height:24px;cursor:pointer;">
+          <input type="checkbox" id="stream-toggle" style="opacity:0;width:0;height:0;" disabled>
+          <span id="stream-slider" style="position:absolute;inset:0;background:#5a544a;border-radius:999px;transition:.2s;opacity:.5;"></span>
+          <span id="stream-knob" style="position:absolute;top:3px;left:3px;width:18px;height:18px;background:#f5f1e8;border-radius:50%;transition:.2s;opacity:.5;"></span>
+        </label>
+      </span>
+    </div>
+    <div class="row"><span class="desc">关闭后流式请求回落为缓冲聚合（整段返回）。设置保存在服务端 kv.json，重启后生效保留。</span></div>
+  </div>
   <div class="endpoint" id="endpoints">
     <h2>API 接口</h2>
     <div class="row"><span class="method m-get">GET</span><span class="path">/health</span><span class="desc">健康检查与统计</span></div>
@@ -256,6 +271,54 @@
   loadModels();
   setInterval(tick, 1000);
   setInterval(poll, 5000);
+  // ===== 流式开关 =====
+  const slider = document.getElementById('stream-slider');
+  const knob = document.getElementById('stream-knob');
+  const toggle = document.getElementById('stream-toggle');
+  const stateText = document.getElementById('stream-state');
+  function paintStream(on, interactive) {
+    slider.style.background = on ? 'var(--accent)' : '#5a544a';
+    slider.style.opacity = interactive ? '1' : '.5';
+    knob.style.left = on ? '23px' : '3px';
+    knob.style.opacity = interactive ? '1' : '.5';
+    stateText.textContent = on ? '已开启' : '已关闭';
+  }
+  async function initStreamToggle() {
+    try {
+      const r = await fetch(base + '/health');
+      const j = await r.json();
+      const on = !!j.stream_live;
+      toggle.checked = on;
+      toggle.disabled = false;
+      paintStream(on, true);
+    } catch (e) {
+      stateText.textContent = '无法读取';
+    }
+  }
+  toggle.addEventListener('change', async () => {
+    const on = toggle.checked;
+    toggle.disabled = true;
+    try {
+      const r = await fetch(base + '/settings/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stream_live: on }),
+      });
+      if (r.ok) {
+        paintStream(on, true);
+      } else {
+        toggle.checked = !on;
+        paintStream(!on, true);
+        stateText.textContent = '保存失败';
+      }
+    } catch (e) {
+      toggle.checked = !on;
+      paintStream(!on, true);
+      stateText.textContent = '保存失败';
+    }
+    toggle.disabled = false;
+  });
+  initStreamToggle();
   // 页面不可见时停止所有轮询，避免后台 WebView 持续耗电
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;

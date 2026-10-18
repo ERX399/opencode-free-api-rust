@@ -35,7 +35,8 @@ _✨ OpenAI 兼容反代 · 单文件部署 ✨_
 | `STRIP_FREE` | off | 去掉 `/v1/models` 返回 ID 的 `-free` 后缀，调用时映射回真实 ID |
 | `UPSTREAM_TIMEOUT` | `90` | 非流式上游请求超时（秒） |
 | `STREAM_TIMEOUT` | `1800` | 流式上游请求超时（秒） |
-| `STREAM_LIVE` | on | `stream: true` 时逐块转发上游 SSE（真流式）；设为 off 回退为缓冲式聚合 |
+| `STREAM_LIVE` | on | `stream: true` 时逐块转发上游 SSE（真流式）；设为 off 回退为缓冲式聚合。运行时可在首页"服务设置"开关切换，状态持久化于 `KV_PATH`（默认 `kv.json`） |
+| `KV_PATH` | `kv.json` | 运行时设置 KV 存储路径（当前保存 `stream_live` 开关） |
 | `STREAM_HEARTBEAT` | `15` | 流式空闲心跳间隔（秒），期间以 SSE 注释行保活 |
 | `STREAM_IDLE_TIMEOUT` | `300` | 流式空闲超时（秒），上游静默超时后中断并收尾 |
 | `CONNECT_TIMEOUT` | `10` | 上游 TCP/TLS 连接超时（秒） |
