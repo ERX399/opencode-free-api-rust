@@ -210,29 +210,42 @@
     } catch (e) {}
   }
 
-  function verNum(v) {
-    let n = 0, p = 1;
-    for (const part of String(v || '').split(/[.-]/)) {
-      n += parseInt(part, 10) * p;
-      p *= 100;
+  function verCmp(a, b) {
+    const pa = String(a || '').split(/[.-]/).map(x => parseInt(x, 10) || 0);
+    const pb = String(b || '').split(/[.-]/).map(x => parseInt(x, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] || 0, y = pb[i] || 0;
+      if (x !== y) return x - y;
     }
-    return n;
+    return 0;
   }
-
+  // 优先读本地 /health 的 latest_version（服务端已检测），失败才回退直连 GitHub API。
   async function checkUpdate() {
+    const cur = document.getElementById('ver').textContent.replace(/^v/i, '');
+    let tag = '';
     try {
-      const cur = document.getElementById('ver').textContent;
-      const r = await fetch('https://api.github.com/repos/ERX399/opencode-free-api-rust/releases/latest', {
-        headers: { 'Accept': 'application/vnd.github+json' }
-      });
-      if (!r.ok) return;
-      const j = await r.json();
-      const tag = String(j.tag_name || '').replace(/^v/i, '');
-      if (tag && verNum(tag) > verNum(cur)) {
-        document.getElementById('update-ver').textContent = 'v' + tag;
-        document.getElementById('update-banner').style.display = 'flex';
+      const r = await fetch(base + '/health');
+      if (r.ok) {
+        const j = await r.json();
+        tag = String(j.latest_version || '');
       }
     } catch (e) {}
+    if (!tag) {
+      try {
+        const r = await fetch('https://api.github.com/repos/ERX399/opencode-free-api-rust/releases/latest', {
+          headers: { 'Accept': 'application/vnd.github+json' }
+        });
+        if (r.ok) {
+          const j = await r.json();
+          tag = String(j.tag_name || '').replace(/^v/i, '').split('-')[0];
+        }
+      } catch (e) {}
+    }
+    if (tag && verCmp(tag, cur) > 0) {
+      document.getElementById('update-ver').textContent = 'v' + tag;
+      document.getElementById('update-banner').style.display = 'flex';
+    }
+  }
   }
 
   document.getElementById('update-close').addEventListener('click', () => {
