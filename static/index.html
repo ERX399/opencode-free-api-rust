@@ -54,10 +54,6 @@
   .card h3 { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; font-size: 20px; margin-bottom: 8px; }
   .card p { font-size: 14px; color: var(--text-muted); }
   .card code, .endpoint code, .row code { font-family: 'SF Mono', Consolas, monospace; font-size: 0.88em; background: var(--accent-soft); color: var(--accent); padding: 1px 6px; border-radius: 4px; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; padding: 16px 0 64px; }
-  .stat { text-align: center; padding: 24px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); }
-  .stat .v { font-family: Georgia, 'Times New Roman', serif; font-size: 32px; font-weight: 500; color: var(--text); }
-  .stat .l { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
   .endpoint { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; margin-bottom: 64px; }
   .endpoint h2 { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; font-size: 24px; margin-bottom: 20px; }
   .row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px dashed var(--border); }
@@ -117,19 +113,6 @@
       <h3>极速轻量</h3>
       <p>纯 Rust 实现，rustls 加密，单文件二进制，内存占用极低。</p>
     </div>
-    <div class="card">
-      <div class="ico">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-      </div>
-      <h3>OpenAI 兼容</h3>
-      <p>标准 <code>/v1/chat/completions</code> 端点，支持流式 SSE，任何客户端直连。</p>
-    </div>
-  </div>
-
-  <div class="stats" id="stats">
-    <div class="stat"><div class="v" id="s-uptime">00:00:00</div><div class="l">运行时长</div></div>
-    <div class="stat"><div class="v" id="s-req">—</div><div class="l">总请求数</div></div>
-    <div class="stat"><div class="v" id="s-models">—</div><div class="l">免费模型</div></div>
   </div>
 
   <div class="endpoint">
@@ -180,49 +163,18 @@
   window.addEventListener('load', () => setTimeout(checkUpdate, 300));
   document.getElementById('dot').classList.remove('ok');
   document.getElementById('status').textContent = '检查中…';
-  const base = location.origin;
-  let startedAt = null;
-
-  function fmt(sec) {
-    const h = String(Math.floor(sec / 3600)).padStart(2, '0');
-    const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
-    const s = String(Math.floor(sec % 60)).padStart(2, '0');
-    return `${h}:${m}:${s}`;
-  }
-
-  function tick() {
-    if (startedAt) {
-      document.getElementById('s-uptime').textContent = fmt((Date.now() - startedAt * 1000) / 1000);
-    }
-  }
-
+const base = location.origin;
   async function poll() {
     if (document.hidden) return;
     try {
       const r = await fetch(base + '/health');
       const j = await r.json();
-      startedAt = j.started ?? startedAt;
-      tick();
       document.getElementById('dot').classList.add('ok');
       document.getElementById('status').textContent = '运行中';
-      document.getElementById('s-req').textContent = j.requests ?? 0;
-      const port = j.port ?? '8788';
-      const pub = j.public_ip ? `http://${j.public_ip}:${port}/v1` : '无法获取公网 IP';
-      document.getElementById('url-loopback').textContent = `http://127.0.0.1:${port}/v1`;
-      document.getElementById('url-lan').textContent = j.local_ip ? `http://${j.local_ip}:${port}/v1` : '无法获取局域网 IP';
-      document.getElementById('url-public').textContent = pub;
     } catch (e) {
       document.getElementById('dot').classList.remove('ok');
       document.getElementById('status').textContent = '连接失败';
     }
-  }
-
-  async function loadModels() {
-    try {
-      const r = await fetch(base + '/v1/models');
-      const j = await r.json();
-      document.getElementById('s-models').textContent = j.data?.length ?? 0;
-    } catch (e) {}
   }
 
   function verCmp(a, b) {
@@ -261,15 +213,11 @@
       document.getElementById('update-banner').style.display = 'flex';
     }
   }
-  }
-
   document.getElementById('update-close').addEventListener('click', () => {
     document.getElementById('update-banner').style.display = 'none';
   });
 
   poll();
-  loadModels();
-  setInterval(tick, 1000);
   setInterval(poll, 5000);
   // ===== 流式开关 =====
   const slider = document.getElementById('stream-slider');
@@ -322,7 +270,7 @@
   // 页面不可见时停止所有轮询，避免后台 WebView 持续耗电
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
-    poll(); loadModels();
+    poll();
   });
 </script>
 <noscript>
