@@ -101,6 +101,7 @@
     <p class="sub">一个面向 OpenAI 兼容上游的轻量反向代理，自动过滤免费模型，多节点故障转移，零依赖部署。</p>
     <div class="cta">
       <a class="btn btn-primary" href="#endpoints">查看接口</a>
+      <a class="btn btn-ghost" id="update-check-btn" href="javascript:void(0)">检查更新</a>
       <a class="btn btn-ghost" href="https://github.com/ERX399/opencode-free-api-rust" target="_blank">GitHub</a>
     </div>
   </header>
@@ -134,7 +135,6 @@
     <h2>API 接口</h2>
     <div class="row"><span class="method m-get">GET</span><span class="path">/health</span><span class="desc">健康检查与统计</span></div>
     <div class="row"><span class="method m-get">GET</span><span class="path">/v1/models</span><span class="desc">免费模型列表</span></div>
-    <div class="row"><span class="method m-post">POST</span><span class="path">/v1/chat/completions</span><span class="desc">对话补全（支持流式）</span></div>
   </div>
 
   <div class="endpoint">
@@ -153,14 +153,14 @@
 </div>
 
 <div class="banner" id="update-banner" style="display:none;">
-  <span>发现新版本 <b id="update-ver"></b>，立即更新</span>
+  <span id="update-msg">发现新版本 <b id="update-ver"></b></span>
   <a id="update-link" href="https://github.com/ERX399/opencode-free-api-rust/releases/latest" target="_blank">去下载 →</a>
   <button type="button" id="update-close" class="banner-close">×</button>
 </div>
 
 <script>
   // 首帧后再执行非关键逻辑（更新检查），加快可交互时间
-  window.addEventListener('load', () => setTimeout(checkUpdate, 300));
+  window.addEventListener('load', () => setTimeout(() => checkUpdate(false), 300));
   document.getElementById('dot').classList.remove('ok');
   document.getElementById('status').textContent = '检查中…';
 const base = location.origin;
@@ -187,7 +187,9 @@ const base = location.origin;
     return 0;
   }
   // 优先读本地 /health 的 latest_version（服务端已检测），失败才回退直连 GitHub API。
-  async function checkUpdate() {
+  async function checkUpdate(manual) {
+    const btn = document.getElementById('update-check-btn');
+    if (manual && btn) { btn.textContent = '检查中…'; btn.style.pointerEvents = 'none'; }
     const cur = document.getElementById('ver').textContent.replace(/^v/i, '');
     let tag = '';
     try {
@@ -208,11 +210,20 @@ const base = location.origin;
         }
       } catch (e) {}
     }
+    if (manual && btn) { btn.textContent = '检查更新'; btn.style.pointerEvents = 'auto'; }
     if (tag && verCmp(tag, cur) > 0) {
       document.getElementById('update-ver').textContent = 'v' + tag;
       document.getElementById('update-banner').style.display = 'flex';
+    } else if (manual) {
+      const msg = document.getElementById('update-msg');
+      msg.textContent = tag ? ('已是最新版本 v' + cur) : '无法获取更新信息';
+      const banner = document.getElementById('update-banner');
+      banner.style.display = 'flex';
+      document.getElementById('update-link').style.display = 'none';
+      setTimeout(() => { if (msg.textContent.indexOf('已是最新') >= 0 || msg.textContent.indexOf('无法获取') >= 0) { banner.style.display = 'none'; msg.innerHTML = '发现新版本 <b id=\"update-ver\"></b>'; document.getElementById('update-link').style.display = ''; } }, 3000);
     }
   }
+  document.getElementById('update-check-btn').addEventListener('click', () => checkUpdate(true));
   document.getElementById('update-close').addEventListener('click', () => {
     document.getElementById('update-banner').style.display = 'none';
   });
