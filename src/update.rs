@@ -1,9 +1,10 @@
 // 版本更新检测：启动时后台拉取 GitHub latest release，与本地版本比较。
 use std::sync::Mutex;
+use ureq::ResponseExt;
 use std::time::Duration;
 
 pub const REPO_API: &str = "https://api.github.com/repos/ERX399/opencode-free-api-rust/releases/latest";
-const CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60;
+const CHECK_INTERVAL_SECS: u64 = 60 * 60;
 
 pub static LATEST_TAG: Mutex<Option<String>> = Mutex::new(None);
 /// 从 tag 提取版本号（去 v 前缀），非 vX.Y.Z 形态返回 None。
@@ -35,7 +36,33 @@ pub fn version_gt(a: &str, b: &str) -> bool {
     false
 }
 
+// 兜底：API 探测失败时直接 GET releases/latest 页面，从跳转地址提取 tag。
+fn fetch_latest_tag_fallback() -> Option<String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .timeout_connect(Some(Duration::from_secs(8)))
+        .build()
+        .into();
+    // 不跟随重定向，302 的 Location 就是 .../releases/tag/vX.Y.Z
+    // ureq 默认跟随重定向，最终落在 .../tag/vX.Y.Z 页面，直接取最终 URL 末段。
+    let response = agent
+        .get("https://github.com/ERX399/opencode-free-api-rust/releases/latest")
+        .call()
+        .ok()?;
+    let url = response.get_uri().to_string();
+    let tag = url.rsplit('/').next()?.to_owned();
+    if tag.starts_with('v') {
+        Some(tag)
+    } else {
+        None
+    }
+}
+
 fn fetch_latest_tag() -> Option<String> {
+    fetch_latest_tag_api().or_else(fetch_latest_tag_fallback)
+}
+
+fn fetch_latest_tag_api() -> Option<String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .timeout_connect(Some(Duration::from_secs(8)))
@@ -71,7 +98,7 @@ fn check_once(local_version: &str) {
     }
 }
 
-/// 启动后台检测线程：启动后 5 秒首次检测，之后每 6 小时一次。
+/// 启动后台检测线程：启动后 5 秒首次检测，之后每小时一次。
 pub fn spawn_update_check(local_version: &'static str) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(5));
