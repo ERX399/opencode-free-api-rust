@@ -135,3 +135,8 @@ linker = "<NDK>/toolchains/llvm/prebuilt/<host>/bin/x86_64-linux-android24-clang
 ```
 
 The same flow runs automatically on every `v*` tag push via the [`release` workflow](../../.github/workflows/release.yml) and uploads the archives to a GitHub Release.
+
+## Contributors
+
+- [@ThinkReally114](https://github.com/ThinkReally114) — live streaming (PR #3)
+- [@lolicin](https://github.com/lolicin) — gate read tool injection fix (PR #2)
