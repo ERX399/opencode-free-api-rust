@@ -33,9 +33,18 @@ public class ProxyService extends Service {
     private volatile boolean stopped;
     private volatile int healthFailures;
     private android.net.ConnectivityManager.NetworkCallback networkCallback;
+    // 服务存活标记：IdleReceiver 无法跨进程查询服务状态（Android 8+ 限制），
+    // 由服务自己在 onCreate/onDestroy 维护
+    private static volatile boolean alive;
+    public static boolean isAlive() {
+        return alive;
+    }
     @Override
     public void onCreate() {
         super.onCreate();
+        // 服务被系统拉起 = 用户希望它跑（或复活链生效），清掉上次「强制关闭」的标记
+        setUserStopped(false);
+        alive = true;
         createChannel();
         startForegroundCompat();
         startProxy();
@@ -73,6 +82,7 @@ public class ProxyService extends Service {
             // 用户显式关闭：置持久标志，让 IdleReceiver 的复活链不再把他拉起来
             stopProxy();
             setUserStopped(true);
+            cancelExactTick();
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
             return START_NOT_STICKY;
@@ -141,6 +151,7 @@ public class ProxyService extends Service {
     public void onDestroy() {
         super.onDestroy();
         stopped = true;
+        alive = false;
         try {
             if (networkCallback != null) {
                 ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE))
@@ -150,6 +161,8 @@ public class ProxyService extends Service {
         }
         releaseWakeLock();
         stopProxy();
+        // 注意：不在此处 cancelExactTick —— 服务被系统回收时 alarm 是复活链的一环。
+        // 只有用户显式 ACTION_STOP 才取消（见 onStartCommand）。
     }
 
     private void startProxy() {
@@ -208,6 +221,21 @@ public class ProxyService extends Service {
                     SystemClock.elapsedRealtime() + 60 * 1000L, pi);
         } catch (Exception e) {
             Log.w(TAG, "alarm tick schedule failed", e);
+        }
+    }
+
+    // 取消自续 alarm 链。否则 PendingIntent.getService 到点会重建已 stopSelf 的服务，
+// 把用户主动关闭的代理在 60 秒后又拉起来。
+    private void cancelExactTick() {
+        try {
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            Intent intent = new Intent(this, ProxyService.class).setAction(ACTION_TICK);
+            PendingIntent pi = PendingIntent.getService(this, 777,
+                    intent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            am.cancel(pi);
+            pi.cancel();
+        } catch (Exception e) {
+            Log.w(TAG, "alarm tick cancel failed", e);
         }
     }
 

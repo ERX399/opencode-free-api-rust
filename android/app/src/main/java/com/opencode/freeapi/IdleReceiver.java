@@ -36,17 +36,9 @@ public class IdleReceiver extends BroadcastReceiver {
     }
 
     private static boolean isServiceRunning(Context context) {
-        ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
-        if (am == null) return false;
-        List<ActivityManager.RunningServiceInfo> list = am.getRunningServices(200);
-        if (list != null) {
-            for (ActivityManager.RunningServiceInfo info : list) {
-                if (ProxyService.class.getName().equals(info.service.getClassName())) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        // Android 8+ 起 getRunningServices 只返回调用方自己的服务，
+        // 且进程被杀后该接口不可靠；改用服务自己维护的静态存活标记
+        return ProxyService.isAlive();
     }
 
     /** 由 MainActivity / IdleReceiver 自身调用，续订 60s 后的下一次心跳 */

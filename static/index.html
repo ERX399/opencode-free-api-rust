@@ -42,6 +42,21 @@
   h1 em { font-style: italic; color: var(--accent); }
   .sub { font-size: 18px; color: var(--text-muted); max-width: 620px; margin: 0 auto 36px; }
   .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .notice {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    flex-wrap: wrap; max-width: 720px; margin: 0 auto 28px;
+    padding: 12px 18px; font-size: 13px; line-height: 1.5;
+    color: var(--text-muted);
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .notice-tag {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    padding: 3px 8px; border-radius: 4px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .notice a { color: var(--accent); text-decoration: none; word-break: break-all; }
+  .notice a:hover { text-decoration: underline; }
   .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 999px; font-size: 15px; font-weight: 500; text-decoration: none; border: 1px solid transparent; transition: all .2s ease; cursor: pointer; }
   .btn-primary { background: var(--text); color: var(--bg); }
   .btn-primary:hover { background: var(--accent); color: var(--text); }
@@ -99,6 +114,11 @@
     <div class="eyebrow">Reverse Proxy · Rust</div>
     <h1>免费模型，<em>开箱即用</em></h1>
     <p class="sub">一个面向 OpenAI 兼容上游的轻量反向代理，自动过滤免费模型，多节点故障转移，零依赖部署。</p>
+    <div class="notice">
+      <span class="notice-tag">开源</span>
+      <span>本工具完全开源，源码托管于 GitHub，欢迎查阅、审计与贡献。</span>
+      <a href="https://github.com/ERX399/opencode-free-api-rust" target="_blank" rel="noopener">github.com/ERX399/opencode-free-api-rust →</a>
+    </div>
     <div class="cta">
       <a class="btn btn-primary" href="#endpoints">查看接口</a>
       <a class="btn btn-ghost" id="update-check-btn" href="javascript:void(0)">检查更新</a>
