@@ -70,16 +70,18 @@ public class ProxyService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? null : intent.getAction();
         if (ACTION_STOP.equals(action)) {
+            // 用户显式关闭：置持久标志，让 IdleReceiver 的复活链不再把他拉起来
             stopProxy();
+            setUserStopped(true);
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
             return START_NOT_STICKY;
         }
         if (ACTION_RESTART.equals(action)) {
             // 通知栏「重启」按钮：用户交互触发的 FGS 重入，系统视为前台活跃
-            stopProxy();
-            startProxy();
-            refreshNotification();
+            setUserStopped(false);
+            restartNative();
+            scheduleExactTick();
             return START_STICKY;
         }
         if (ACTION_PING.equals(action)) {
@@ -111,6 +113,25 @@ public class ProxyService extends Service {
         return START_STICKY;
     }
 
+    // 用户显式「强制关闭」的持久标记：跨进程重启保留，
+// 避免 IdleReceiver 的 60s 复活链把用户主动关掉的服务又拉起来
+    private void setUserStopped(boolean value) {
+        try {
+            getSharedPreferences("ocfa", MODE_PRIVATE).edit()
+                    .putBoolean("user_stopped", value).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static boolean isUserStopped(android.content.Context ctx) {
+        try {
+            return ctx.getSharedPreferences("ocfa", MODE_PRIVATE)
+                    .getBoolean("user_stopped", false);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
         return null;
@@ -132,25 +153,26 @@ public class ProxyService extends Service {
     }
 
     private void startProxy() {
-        if (process != null && process.isAlive()) {
-            return;
-        }
-        try {
-            ApplicationInfo info = getApplicationInfo();
-            File lib = new File(info.nativeLibraryDir, "libopencode_free_api.so");
-            if (!lib.exists() || lib.length() == 0) {
-                Log.e(TAG, "native library missing: " + lib.getAbsolutePath());
+        synchronized (this) {
+            if (process != null && process.isAlive()) {
                 return;
             }
-            ProcessBuilder builder = new ProcessBuilder(lib.getAbsolutePath());
-            builder.directory(getFilesDir());
-            builder.redirectErrorStream(true);
-            process = builder.start();
-            Log.i(TAG, "native process started");
-            watchProcess();
-            startKeepAlive();
-        } catch (IOException e) {
-            Log.e(TAG, "failed to start native process", e);
+            try {
+                ApplicationInfo info = getApplicationInfo();
+                File lib = new File(info.nativeLibraryDir, "libopencode_free_api.so");
+                if (!lib.exists() || lib.length() == 0) {
+                    Log.e(TAG, "native library missing: " + lib.getAbsolutePath());
+                    return;
+                }
+                ProcessBuilder builder = new ProcessBuilder(lib.getAbsolutePath());
+                builder.directory(getFilesDir());
+                builder.redirectErrorStream(true);
+                process = builder.start();
+                Log.i(TAG, "native process started");
+                watchProcess();
+            } catch (IOException e) {
+                Log.e(TAG, "failed to start native process", e);
+            }
         }
     }
 
@@ -193,21 +215,20 @@ public class ProxyService extends Service {
     // 自动 kill 并重启 native 进程。这是 GKD 式“上层守护下层”的核心。
     private void startHealthWatchdog() {
         Thread thread = new Thread(() -> {
-            int failures = 0;
             while (!stopped) {
                 try {
                     Thread.sleep(60 * 1000L); // 1 分钟一测
                     if (stopped) return;
-                    if (!isNetworkAvailable()) { failures = 0; continue; }
+                    if (!isNetworkAvailable()) { healthFailures = 0; continue; }
                     if (healthCheck()) {
-                        failures = 0;
+                        healthFailures = 0;
                     } else {
-                        failures++;
-                        Log.w(TAG, "health check failed x" + failures);
-                        if (failures >= 3) { // 连续 3 分钟无响应
+                        healthFailures++;
+                        Log.w(TAG, "health check failed x" + healthFailures);
+                        if (healthFailures >= 3) { // 连续 3 分钟无响应
                             Log.w(TAG, "native hung, restarting...");
                             restartNative();
-                            failures = 0;
+                            healthFailures = 0;
                         }
                     }
                 } catch (InterruptedException e) {
@@ -281,21 +302,50 @@ public class ProxyService extends Service {
         }
     }
 
+    // 只重启 native 子进程，不动服务生命周期标志 stopped。
+    // 原实现调用 stopProxy() 会把 stopped 置 true，导致健康看门狗/保活/网络回调
+    // 等所有守护线程在下一次循环时永久退出——重启一次就失去全部保活能力。
     private void restartNative() {
-        stopProxy();
-        stopped = false; // stopProxy 置位后 watchdog 线程会退出，这里复位让服务继续
+        synchronized (this) {
+            if (process != null) {
+                try {
+                    process.destroy();
+                } catch (Exception ignored) {
+                }
+                process = null;
+            }
+        }
+        healthFailures = 0;
         startProxy();
+        refreshNotification();
     }
 
     // 看门狗：子进程意外退出时自动拉起
+    // 进程看门狗：只在 onCreate 启动一次，循环检查当前 process 是否存活。
+    // 原实现每次 startProxy 都新建一个 watchdog 线程（并各自 waitFor 旧进程引用），
+    // 重启次数越多线程越多；这里改为单一常驻线程，按引用判活。
+    private volatile boolean watchdogStarted;
     private void watchProcess() {
+        if (watchdogStarted) return;
+        watchdogStarted = true;
         Thread thread = new Thread(() -> {
             while (!stopped) {
                 try {
-                    process.waitFor();
+                    Process p = process;
+                    if (p != null) {
+                        p.waitFor();
+                    } else {
+                        Thread.sleep(1000);
+                        continue;
+                    }
                     if (stopped) return;
                     Log.w(TAG, "native process exited, restarting...");
-                    startProxy();
+                    // 避免与健康看门狗/网络回调同时重启造成双进程
+                    synchronized (this) {
+                        if (process == p) {
+                            startProxy();
+                        }
+                    }
                 } catch (InterruptedException e) {
                     return;
                 }

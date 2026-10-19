@@ -22,6 +22,8 @@ public class IdleReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         if (!ACTION_RESURRECT.equals(intent == null ? null : intent.getAction())) return;
+        // 用户主动「强制关闭」过：不再自动复活，直到他重新打开 APP
+        if (ProxyService.isUserStopped(context)) return;
         if (!isServiceRunning(context)) {
             Intent service = new Intent(context, ProxyService.class);
             if (Build.VERSION.SDK_INT >= 26) {
