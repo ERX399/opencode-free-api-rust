@@ -203,6 +203,10 @@ fn main() {
     };
     let (tx, rx) = mpsc::channel::<HttpRequest>();
     let rx = Arc::new(Mutex::new(rx));
+    // 流式请求会在 worker 里阻塞到整条 SSE 结束（可能数分钟），
+    // 若并发流数达到 worker 数，后续请求（含 /health）会全部排队，
+    // 表现为面板卡死、APP 判定假死并重启。worker 数下限抬高到 32 缓解。
+    let workers = workers.max(32);
     for _ in 0..workers {
         let rx = Arc::clone(&rx);
         let app = app.clone();
@@ -220,6 +224,25 @@ fn main() {
         });
     }
     for request in server.incoming_requests() {
+        // /health 在接收线程里直接应答：它必须永远可用，
+        // 不能被排队中的流式请求饿死（APP 与磁贴都靠它判活）
+        let path = request.url().split('?').next().unwrap_or("").to_owned();
+        if request.method() == &Method::Get && is_health_path(normalize_path(&path)) {
+            let body = json!({
+                "status": "ok",
+                "nodes": app.nodes,
+                "requests": app.requests.load(Ordering::Relaxed),
+                "port": app.port,
+                "local_ip": app.local_ip,
+                "public_ip": app.public_ip,
+                "started": app.started,
+                "version": VERSION,
+                "latest_version": update::latest_tag(),
+                "stream_live": app.stream_live.load(Ordering::Relaxed),
+            });
+            let _ = request.respond(json_response(200, body));
+            continue;
+        }
         let _ = tx.send(request);
     }
 }
