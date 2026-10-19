@@ -79,27 +79,45 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         webView.setWebViewClient(new WebViewClient() {
             private int retries = 0;
+            private static final int MAX_RETRIES = 30;
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                // 页面成功加载：重置重试计数，否则 30 次用尽后
+                // 后续任何一次断网/服务重启都会永久卡在加载页
+                retries = 0;
+            }
 
             @Override
             public void onReceivedError(WebView view, int errorCode,
                                         String description, String failingUrl) {
-                showLoadingPage(view);
-                if (retries < 30) {
-                    retries++;
-                    view.postDelayed(() -> {
-                        if (!isFinishing()) {
-                            view.loadUrl("http://127.0.0.1:8788/");
-                        }
-                    }, 800);
+                // 只处理主文档错误，子资源（favicon 等）失败不该触发整页重试
+                if (failingUrl != null && !failingUrl.startsWith("http://127.0.0.1:8788")) {
+                    return;
                 }
+                if (retries >= MAX_RETRIES) {
+                    showLoadingPage(view, "服务启动超时", "请下拉通知栏点「重启」，或重新打开应用");
+                    return;
+                }
+                showLoadingPage(view, "正在启动服务…", null);
+                retries++;
+                view.postDelayed(() -> {
+                    if (!isFinishing() && !isDestroyed()) {
+                        view.loadUrl("http://127.0.0.1:8788/");
+                    }
+                }, 800);
             }
 
-            private void showLoadingPage(WebView view) {
+            private void showLoadingPage(WebView view, String text, String hint) {
                 String html = "<html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
                         + "<style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;"
-                        + "background:#14110d;color:#a39d92;font-family:system-ui,sans-serif}"
-                        + "p{text-align:center}h2{color:#cc785c;margin-bottom:8px}</style></head>"
-                        + "<body><div><h2>OC Free API</h2><p>正在启动服务…</p></div></body></html>";
+                        + "background:#14110d;color:#a39d92;font-family:system-ui,sans-serif;padding:24px}"
+                        + "p{text-align:center;margin:6px 0}h2{color:#cc785c;margin-bottom:8px}"
+                        + ".hint{font-size:13px;opacity:.75;margin-top:14px}</style></head>"
+                        + "<body><div><h2>OC Free API</h2><p>" + text + "</p>"
+                        + (hint == null ? "" : "<p class=\"hint\">" + hint + "</p>")
+                        + "</div></body></html>";
                 view.loadDataWithBaseURL("about:blank", html, "text/html", "utf-8", null);
             }
         });
@@ -127,7 +145,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (webView != null) webView.onResume();
+        if (webView != null) {
+            webView.onResume();
+            // 若上次停留在错误页（服务当时没起来），回到前台时自动再试一次
+            String url = webView.getUrl();
+            if (url == null || url.startsWith("about:")) {
+                webView.loadUrl("http://127.0.0.1:8788/");
+            }
+        }
     }
 
     @Override
