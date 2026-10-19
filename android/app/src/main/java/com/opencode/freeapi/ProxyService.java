@@ -180,13 +180,38 @@ public class ProxyService extends Service {
                 ProcessBuilder builder = new ProcessBuilder(lib.getAbsolutePath());
                 builder.directory(getFilesDir());
                 builder.redirectErrorStream(true);
+                // 端口固定传给子进程，避免继承到外部环境里被改过的 PORT
+                // 导致 APP 里硬编码的 8788 永远连不上
+                builder.environment().put("PORT", "8788");
                 process = builder.start();
                 Log.i(TAG, "native process started");
+                drainProcessOutput(process);
                 watchProcess();
             } catch (IOException e) {
                 Log.e(TAG, "failed to start native process", e);
             }
         }
+    }
+
+    // 必须持续读走子进程的 stdout/stderr。
+    // redirectErrorStream(true) 只合并了两个流，管道缓冲区（约 64KB）满了以后
+    // 子进程的 write() 会永久阻塞——Rust 端每个请求都 eprintln 日志，
+    // 跑一段时间就会卡死在日志写入上，表现为代理无响应 / 连接被中止（os error 103）。
+    private void drainProcessOutput(final Process p) {
+        Thread thread = new Thread(() -> {
+            byte[] buf = new byte[4096];
+            try (java.io.InputStream in = p.getInputStream()) {
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    // 只保留最后一行用于诊断，避免日志刷爆 logcat
+                    String line = new String(buf, 0, n, "UTF-8").trim();
+                    if (!line.isEmpty()) Log.d(TAG, "native: " + line);
+                }
+            } catch (Exception ignored) {
+            }
+        }, "proxy-stdout-drain");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     // GKD 式保活核心：周期性重发前台通知 + 触发一次本机健康请求。
