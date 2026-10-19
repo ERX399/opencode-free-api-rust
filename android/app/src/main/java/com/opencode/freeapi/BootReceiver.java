@@ -15,13 +15,15 @@ public class BootReceiver extends BroadcastReceiver {
         String action = intent == null ? null : intent.getAction();
         Log.i(TAG, "boot receiver action=" + action);
         if (Intent.ACTION_BOOT_COMPLETED.equals(action)
-                || "android.intent.action.MY_PACKAGE_REPLACED".equals(action)) {
+                || "android.intent.action.MY_PACKAGE_REPLACED".equals(action)
+                || Intent.ACTION_USER_PRESENT.equals(action)) {
             Intent service = new Intent(context, ProxyService.class);
             if (Build.VERSION.SDK_INT >= 26) {
                 context.startForegroundService(service);
             } else {
                 context.startService(service);
             }
+            IdleReceiver.schedule(context);
         }
     }
 }

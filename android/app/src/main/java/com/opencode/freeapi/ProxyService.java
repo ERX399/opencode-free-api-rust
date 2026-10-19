@@ -1,5 +1,5 @@
 package com.opencode.freeapi;
-
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -9,10 +9,13 @@ import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.ServiceInfo;
 import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.Log;
 import java.io.File;
 import java.io.IOException;
@@ -28,6 +31,8 @@ public class ProxyService extends Service {
     private static final String ACTION_PING = "com.opencode.freeapi.PING";
     private Process process;
     private volatile boolean stopped;
+    private volatile int healthFailures;
+    private android.net.ConnectivityManager.NetworkCallback networkCallback;
     @Override
     public void onCreate() {
         super.onCreate();
@@ -36,6 +41,8 @@ public class ProxyService extends Service {
         startProxy();
         startKeepAlive();
         startHealthWatchdog();
+        startNetworkCallback();
+        scheduleExactTick();
         acquireWakeLock();
     }
 
@@ -81,6 +88,26 @@ public class ProxyService extends Service {
             refreshNotification();
             return START_STICKY;
         }
+        if (ACTION_TICK.equals(action)) {
+            // AlarmManager 兜底 tick：刷新通知（活跃时间戳）+ 健康探测（真实流量），
+            // 并续订下一次 alarm，形成 Doze 下也不断链的自续心跳
+            refreshNotification();
+            if (process != null && process.isAlive() && healthCheck()) {
+                // 正常：无事
+            } else if (process != null && !process.isAlive()) {
+                startProxy();
+            } else if (!isNetworkAvailable()) {
+                // 无网阶段不算失败，避免误杀
+            } else {
+                healthFailures++;
+                if (healthFailures >= 2) {
+                    restartNative();
+                    healthFailures = 0;
+                }
+            }
+            scheduleExactTick();
+            return START_STICKY;
+        }
         return START_STICKY;
     }
 
@@ -93,6 +120,13 @@ public class ProxyService extends Service {
     public void onDestroy() {
         super.onDestroy();
         stopped = true;
+        try {
+            if (networkCallback != null) {
+                ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE))
+                        .unregisterNetworkCallback(networkCallback);
+            }
+        } catch (Exception ignored) {
+        }
         releaseWakeLock();
         stopProxy();
     }
@@ -120,13 +154,14 @@ public class ProxyService extends Service {
         }
     }
 
-    // GKD 式保活核心：周期性重发前台通知，更新 when 时间戳。
-    // 系统冻结判定参考“服务最近活跃时间”，每次 notify 都会重置该计时。
+    // GKD 式保活核心：周期性重发前台通知 + 触发一次本机健康请求。
+// 通知刷新更新系统“最近活跃”时间戳；健康请求产生真实流量，
+// 对只看网络活动的 ROM（MIUI/OriginOS 等）同样保持活跃判定。
     private void startKeepAlive() {
         Thread thread = new Thread(() -> {
             while (!stopped) {
                 try {
-                    Thread.sleep(10 * 60 * 1000L); // 10 分钟
+                    Thread.sleep(2 * 60 * 1000L); // 2 分钟
                     if (stopped) return;
                     refreshNotification();
                 } catch (InterruptedException e) {
@@ -136,6 +171,22 @@ public class ProxyService extends Service {
         }, "proxy-keepalive");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    // Doze 深睡下线程 sleep 会被系统合并延迟，用 setExactAndAllowWhileIdle
+    // 定时唤醒做兜底 tick：刷新通知 + 健康探测。自身触发自身，形成自续 alarm 链。
+    static final String ACTION_TICK = "com.opencode.freeapi.ALARM_TICK";
+    private void scheduleExactTick() {
+        try {
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            Intent intent = new Intent(this, ProxyService.class).setAction(ACTION_TICK);
+            PendingIntent pi = PendingIntent.getService(this, 777,
+                    intent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + 60 * 1000L, pi);
+        } catch (Exception e) {
+            Log.w(TAG, "alarm tick schedule failed", e);
+        }
     }
 
     // 健康探测守护：后台网络恢复后若 native 假死（worker 卡在阻塞 DNS/连接），
@@ -168,13 +219,47 @@ public class ProxyService extends Service {
         thread.start();
     }
 
+    // 网络可用性：优先 NetworkCapabilities（API 23+），回退 NetworkInfo
     private boolean isNetworkAvailable() {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (Build.VERSION.SDK_INT >= 23) {
+                Network net = cm.getActiveNetwork();
+                if (net == null) return false;
+                NetworkCapabilities caps = cm.getNetworkCapabilities(net);
+                return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            }
             NetworkInfo info = cm.getActiveNetworkInfo();
             return info != null && info.isConnected();
         } catch (Exception e) {
             return true; // 无法判断时假定有网，交给健康检查决定
+        }
+    }
+
+    // 网络状态回调：断网恢复 / 网络切换时立即探测并按需重启 native，
+    // 避免依赖轮询才能发现“切网后连接全部失效”（ECONNABORTED 高发场景）
+    private void startNetworkCallback() {
+        try {
+            final ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    // 切网恢复：延迟 1.5s 让路由就绪，然后立刻做一次真实健康探测
+                    new Thread(() -> {
+                        try { Thread.sleep(1500); } catch (InterruptedException ignored) { return; }
+                        if (stopped) return;
+                        if (process == null || !process.isAlive()) {
+                            startProxy();
+                        } else if (!healthCheck()) {
+                            restartNative();
+                        }
+                        refreshNotification();
+                    }, "net-recover").start();
+                }
+            };
+            cm.registerDefaultNetworkCallback(networkCallback);
+        } catch (Exception e) {
+            Log.w(TAG, "network callback failed", e);
         }
     }
 

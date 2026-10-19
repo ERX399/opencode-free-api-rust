@@ -25,6 +25,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestNotificationPermission();
         requestBatteryOptimizationExemption();
+        IdleReceiver.schedule(this);
         startProxyService();
         setupWebView();
     }
