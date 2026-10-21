@@ -28,7 +28,9 @@ public class ProxyTileService extends TileService {
             startServiceCompat(intent);
             setTile(false);
         } else {
+            // 「已运行」但点磁贴的场景在下方 else-if：不再发裸 intent
             // 用户点击磁贴 = 交互触发的 FGS 启动，不受后台限制
+            intent.setAction(ProxyService.ACTION_ENSURE);
             startServiceCompat(intent);
             // 启动是异步的，先置「启动中」再延迟复核真实状态，
             // 避免 startForegroundService 失败时磁贴错误显示为已运行
