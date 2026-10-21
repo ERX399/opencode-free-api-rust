@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="freeze_shield_label">冻结防护（防 ROM 冻结保活）</string>
+    <string name="freeze_shield_desc">启用后系统将不会冻结本应用的后台服务，代理可长期稳定运行。本服务不监听任何事件、不读取任何屏幕内容，仅作为保活锚点。</string>
+</resources>

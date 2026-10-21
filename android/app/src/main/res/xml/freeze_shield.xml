@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  冻结防护锚点：vivo / OPPO / 小米等 ROM 对后台 app 的 cgroup 冻结会跳过
+  「已启用无障碍服务的 app」（与 GKD / Key Mapper 同机制）。
+  该服务不监听任何事件、不获取任何节点信息，仅作为无障碍锚点存在，
+  用户需在 系统设置 → 无障碍 中手动启用。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
+    android:canPerformGestures="false"
+    android:notificationTimeout="100"
+    android:description="@string/freeze_shield_desc" />

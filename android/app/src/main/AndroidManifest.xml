@@ -5,7 +5,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -31,7 +32,11 @@
         <service
             android:name=".ProxyService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse|mediaPlayback">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="local_api_proxy" />
+        </service>
         <service
             android:name=".ProxyTileService"
             android:exported="true"
@@ -55,6 +60,21 @@
         <receiver
             android:name=".IdleReceiver"
             android:exported="false" />
+
+        <!-- 冻结防护锚点：启用后 ROM 冻结策略跳过本 app（与 GKD 同机制）。
+             不监听任何事件、不读取窗口内容，纯锚点。用户在系统设置中手动启用。 -->
+        <service
+            android:name=".FreezeShieldService"
+            android:exported="false"
+            android:label="@string/freeze_shield_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/freeze_shield" />
+        </service>
     </application>
 
 </manifest>

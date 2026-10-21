@@ -63,7 +63,11 @@ pub fn parse_retry_after(value: &str) -> Option<u64> {
 }
 
 pub const MAX_BODY_BYTES: u64 = 64 << 20;
-pub const DEFAULT_NODE: &str = "https://opencode.ai/inference/v1";
+// V1 旧网关与 V2 Console 网关共享同一批免费模型与免费层限流，双节点互为故障转移。
+pub const DEFAULT_NODES: &[&str] = &[
+    "https://opencode.ai/inference/v1",
+    "https://opencode.ai/zen/v1",
+];
 pub const DEFAULT_USER_AGENT: &str = "opencode/latest/2.0.29/cli";
 pub const SESSION_TTL_MS: u64 = 30 * 60 * 1000;
 pub const ID_CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";

@@ -29,9 +29,18 @@ public class ProxyService extends Service {
     public static final String ACTION_STOP = "com.opencode.freeapi.STOP";
     private static final String ACTION_RESTART = "com.opencode.freeapi.RESTART";
     private static final String ACTION_PING = "com.opencode.freeapi.PING";
+    // 磁贴「已运行」时点击发来：确保服务真正健康（native 活着且 /health 可答），
+    // 不健康则修复（重启 native）。此前裸 intent 直落 START_STICKY 什么都不做，
+    // 服务僵死时磁贴点了等于没点。
+    public static final String ACTION_ENSURE = "com.opencode.freeapi.ENSURE";
     private Process process;
     private volatile boolean stopped;
     private volatile int healthFailures;
+    // 冻结穿透（mediaPlayback 通道）：国产 ROM（vivo 实测）不冻结「正在播放」的 app——
+    // 冻结正在放歌的应用会打断用户可感知的音频，ROM 冻结策略全部豁免该状态。
+    // 用 MediaPlayer 循环播放内置的 3 秒静音资源，不需要音频焦点、不产生任何声音，
+    // 却让 AudioService 把本进程登记为「活跃播放者」。
+    private android.media.MediaPlayer silentPlayer;
     private android.net.ConnectivityManager.NetworkCallback networkCallback;
     // 服务存活标记：IdleReceiver 无法跨进程查询服务状态（Android 8+ 限制），
     // 由服务自己在 onCreate/onDestroy 维护
@@ -53,6 +62,7 @@ public class ProxyService extends Service {
         startNetworkCallback();
         scheduleExactTick();
         acquireWakeLock();
+        startSilentPlayback();
     }
 
     // PARTIAL_WAKE_LOCK：保持 CPU 运行，防后台深度休眠导致 native 线程停摆。
@@ -74,6 +84,39 @@ public class ProxyService extends Service {
             if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         } catch (Exception ignored) {
         }
+    }
+
+    // 静音循环播放：MediaPlayer 无声资源 + setLooping，AudioService 视本进程为
+    // 活跃播放者，ROM 冻结策略对其豁免（行业标准保活手法，不抢焦点不出声）
+    private void startSilentPlayback() {
+        try {
+            if (silentPlayer != null) return;
+            silentPlayer = android.media.MediaPlayer.create(this, R.raw.silent_loop);
+            if (silentPlayer == null) return;
+            silentPlayer.setLooping(true);
+            silentPlayer.setVolume(0f, 0f);
+            // usage=USAGE_MEDIA：进入 media 类别的 AudioPlaybackConfiguration
+            silentPlayer.setAudioAttributes(new android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build());
+            silentPlayer.start();
+            Log.i(TAG, "silent playback started (freeze shield)");
+        } catch (Exception e) {
+            Log.w(TAG, "silent playback failed", e);
+            silentPlayer = null;
+        }
+    }
+
+    private void stopSilentPlayback() {
+        try {
+            if (silentPlayer != null) {
+                silentPlayer.stop();
+                silentPlayer.release();
+            }
+        } catch (Exception ignored) {
+        }
+        silentPlayer = null;
     }
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -120,6 +163,17 @@ public class ProxyService extends Service {
             scheduleExactTick();
             return START_STICKY;
         }
+        if (ACTION_ENSURE.equals(action)) {
+            // 磁贴幂等触发：确认服务活着，同时把僵死/冻结期间失联的 native 修好
+            refreshNotification();
+            if (process == null || !process.isAlive()) {
+                startProxy();
+            } else if (!healthCheck()) {
+                // native 活着但 /health 不通（典型：解冻后连接池/事件循环僵死）
+                restartNative();
+            }
+            return START_STICKY;
+        }
         return START_STICKY;
     }
 
@@ -152,6 +206,7 @@ public class ProxyService extends Service {
         super.onDestroy();
         stopped = true;
         alive = false;
+        stopSilentPlayback();
         try {
             if (networkCallback != null) {
                 ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE))
@@ -452,7 +507,14 @@ public class ProxyService extends Service {
                         buildAction(ACTION_RESTART))
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "强制关闭", stopPending)
                 .build();
-        if (Build.VERSION.SDK_INT >= 29) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            // specialUse + mediaPlayback：mediaPlayback 让 AudioService 登记本进程为
+            // 活跃播放者（配合静音循环播放），ROM 冻结策略豁免该状态；
+            // specialUse 兜底保持 FGS 无时长限制。
+            startForeground(NOTIF_ID, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                            | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+        } else if (Build.VERSION.SDK_INT >= 29) {
             startForeground(NOTIF_ID, notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         } else {
@@ -482,6 +544,7 @@ public class ProxyService extends Service {
 
     private void stopProxy() {
         stopped = true;
+        stopSilentPlayback();
         if (process != null) {
             process.destroy();
             process = null;

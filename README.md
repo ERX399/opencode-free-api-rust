@@ -29,7 +29,7 @@ _✨ OpenAI 兼容反代 · 单文件部署 ✨_
 | --- | --- | --- |
 | `HOST` | `0.0.0.0` | 绑定地址 |
 | `PORT` | `8788` | 绑定端口 |
-| `NODES` | `https://opencode.ai/zen/v1` | 逗号分隔的上游基础 URL，默认官方 OpenCode Zen 网关 |
+| `NODES` | `https://opencode.ai/inference/v1,https://opencode.ai/zen/v1` | 逗号分隔的上游基础 URL，默认官方双网关（Console 与 Zen 互为故障转移） |
 | `API_TOKEN` | 未设置 | 发往上游的可选 Bearer 令牌，未设置时不发送 Authorization 请求头（填你的 Zen Key） |
 | `AUTH_TOKEN` | 未设置 | 设置后请求须携带 `Authorization: Bearer <value>`（`/health` 与预检除外） |
 | `STRIP_FREE` | off | 去掉 `/v1/models` 返回 ID 的 `-free` 后缀，调用时映射回真实 ID |

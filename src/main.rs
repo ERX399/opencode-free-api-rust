@@ -119,7 +119,10 @@ impl App {
         let connect_timeout = env_seconds("CONNECT_TIMEOUT", 10);
         let nodes = split_nodes(&env::var("NODES").unwrap_or_default());
         let nodes = if nodes.is_empty() {
-            vec![crate::protocol::DEFAULT_NODE.to_owned()]
+            crate::protocol::DEFAULT_NODES
+                .iter()
+                .map(|n| n.to_string())
+                .collect()
         } else {
             nodes
         };
@@ -1321,7 +1324,7 @@ fn feed_upstream(mut reader: impl Read + Send + 'static, sender: mpsc::SyncSende
 mod tests {
     use super::*;
     use crate::convert::{ensure_completion_reasoning, stream_chunk_identity, stream_has_reasoning};
-    use crate::protocol::{DEFAULT_NODE, read_body, request_header};
+    use crate::protocol::{DEFAULT_NODES, read_body, request_header};
     use serde_json::json;
     use tiny_http::Header;
 
@@ -1399,7 +1402,7 @@ mod tests {
 
     fn app_for_test() -> App {
         App {
-            nodes: vec![DEFAULT_NODE.to_owned()],
+            nodes: DEFAULT_NODES.iter().map(|n| n.to_string()).collect(),
             token: None,
             auth_token: None,
             strip_free: false,
